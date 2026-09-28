@@ -3,10 +3,13 @@ import { loadChatContacts } from "./chat-storage";
 import { kvGet, kvSet, registerKvMigration } from "./kv-db";
 import type { Character } from "./character-types";
 import type { MomentComment, MomentLike, MomentPost } from "./moments-types";
+import { resolveUserIdentity } from "./settings-storage";
 
 const CHARACTER_WORLDS_KEY = "ai_phone_character_worlds_v1";
 export const CHARACTER_WORLDS_UPDATED_EVENT = "character-worlds-updated";
 export const DEFAULT_CHARACTER_WORLD_ID = "world_default";
+/** 关系网中的用户是特殊节点，不会被当作可聊天/可选剧情角色。 */
+export const CHARACTER_WORLD_USER_NODE_ID = "__current_user_identity__";
 
 registerKvMigration(CHARACTER_WORLDS_KEY);
 
@@ -23,6 +26,12 @@ export type CharacterWorldGroup = {
     description: string;
     memberIds: string[];
     relations: CharacterWorldRelation[];
+    userNode: {
+        canvasX: number;
+        canvasY: number;
+        canvasRot: number;
+        canvasZIndex: number;
+    };
     createdAt: string;
     updatedAt: string;
 };
@@ -48,6 +57,7 @@ function createDefaultGroup(memberIds: string[], now = new Date().toISOString())
         description: "",
         memberIds,
         relations: [],
+        userNode: { canvasX: 70, canvasY: 90, canvasRot: -3, canvasZIndex: 180 },
         createdAt: now,
         updatedAt: now,
     };
@@ -82,7 +92,7 @@ function normalizeGroups(groups: CharacterWorldGroup[], characters: Character[])
                 members.push(memberId);
             }
 
-            const memberSet = new Set(members);
+            const memberSet = new Set([...members, CHARACTER_WORLD_USER_NODE_ID]);
             const relations = (Array.isArray(group.relations) ? group.relations : [])
                 .filter(relation => (
                     relation
@@ -108,6 +118,12 @@ function normalizeGroups(groups: CharacterWorldGroup[], characters: Character[])
                 description: typeof group.description === "string" ? group.description.trim() : "",
                 memberIds: members,
                 relations,
+                userNode: {
+                    canvasX: Number.isFinite(group.userNode?.canvasX) ? group.userNode.canvasX : 70,
+                    canvasY: Number.isFinite(group.userNode?.canvasY) ? group.userNode.canvasY : 90,
+                    canvasRot: Number.isFinite(group.userNode?.canvasRot) ? group.userNode.canvasRot : -3,
+                    canvasZIndex: Number.isFinite(group.userNode?.canvasZIndex) ? group.userNode.canvasZIndex : 180,
+                },
                 createdAt: group.createdAt || now,
                 updatedAt: group.updatedAt || now,
             };
@@ -161,6 +177,7 @@ export function createCharacterWorldGroup(name: string): CharacterWorldGroup {
         description: "",
         memberIds: [],
         relations: [],
+        userNode: { canvasX: 70, canvasY: 90, canvasRot: -3, canvasZIndex: 180 },
         createdAt: now,
         updatedAt: now,
     };
@@ -206,7 +223,7 @@ export function moveCharacterToWorld(characterId: string, groupId: string): void
         const nextMemberIds = group.memberIds.filter(id => id !== characterId);
         const receivesMember = group.id === groupId;
         const memberIds = receivesMember ? [...nextMemberIds, characterId] : nextMemberIds;
-        const memberSet = new Set(memberIds);
+        const memberSet = new Set([...memberIds, CHARACTER_WORLD_USER_NODE_ID]);
         return {
             ...group,
             memberIds,
@@ -224,7 +241,7 @@ export function addCharacterWorldRelation(groupId: string, fromCharacterId: stri
     const now = new Date().toISOString();
     saveCharacterWorldGroups(loadCharacterWorldGroups().map(group => {
         if (group.id !== groupId) return group;
-        const memberSet = new Set(group.memberIds);
+        const memberSet = new Set([...group.memberIds, CHARACTER_WORLD_USER_NODE_ID]);
         if (!memberSet.has(fromCharacterId) || !memberSet.has(toCharacterId)) return group;
         return {
             ...group,
@@ -240,6 +257,15 @@ export function addCharacterWorldRelation(groupId: string, fromCharacterId: stri
             updatedAt: now,
         };
     }));
+}
+
+export function updateCharacterWorldUserNodePosition(groupId: string, canvasX: number, canvasY: number): void {
+    const now = new Date().toISOString();
+    saveCharacterWorldGroups(loadCharacterWorldGroups().map(group => group.id === groupId ? {
+        ...group,
+        userNode: { ...group.userNode, canvasX, canvasY },
+        updatedAt: now,
+    } : group));
 }
 
 export function deleteCharacterWorldRelation(groupId: string, relationId: string): void {
@@ -330,7 +356,10 @@ export function formatCharacterRelationsForPrompt(characterId: string): string {
     if (!hasWorldSetup) return "";
 
     const characters = loadCharacters();
+    const userIdentity = resolveUserIdentity(characterId);
+    const userName = userIdentity?.name?.trim() || "用户";
     const nameById = new Map(characters.map(character => [character.id, character.name]));
+    nameById.set(CHARACTER_WORLD_USER_NODE_ID, userName);
     // 标注哪些同世界角色已是用户好友——供「推荐联系人」判断是否还需要发名片
     const contactIds = new Set(loadChatContacts().map(contact => contact.characterId));
     const memberNames = group.memberIds
@@ -355,6 +384,17 @@ export function formatCharacterRelationsForPrompt(characterId: string): string {
         const toName = nameById.get(relation.toCharacterId);
         if (!fromName || !toName) continue;
         lines.push(`${fromName}是${toName}的${relation.label}。`);
+    }
+
+    if (group.relations.some(relation => relation.fromCharacterId === CHARACTER_WORLD_USER_NODE_ID || relation.toCharacterId === CHARACTER_WORLD_USER_NODE_ID)) {
+        const identityDetails = [
+            userIdentity?.gender ? `性别：${userIdentity.gender}` : "",
+            userIdentity?.age ? `年龄：${userIdentity.age}` : "",
+            userIdentity?.occupation ? `职业：${userIdentity.occupation}` : "",
+            userIdentity?.bio?.trim() ? `简介：${userIdentity.bio.trim()}` : "",
+            userIdentity?.customSettings?.trim() ? `补充设定：${userIdentity.customSettings.trim()}` : "",
+        ].filter(Boolean).join("；");
+        lines.push(`当前用户身份节点：${userName}${identityDetails ? `（${identityDetails}）` : ""}。`);
     }
 
     // 一跳视角简介：与 viewer 拉过线的角色，附上各自的简量人设，

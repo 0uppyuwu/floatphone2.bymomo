@@ -28,6 +28,8 @@ import {
   moveCharacterToWorld,
   renameCharacterWorldGroup,
   updateCharacterWorldDescription,
+  updateCharacterWorldUserNodePosition,
+  CHARACTER_WORLD_USER_NODE_ID,
   CHARACTER_WORLDS_UPDATED_EVENT,
   DEFAULT_CHARACTER_WORLD_ID,
   type CharacterWorldGroup,
@@ -54,6 +56,7 @@ import { notifyMascotPageContext } from "@/lib/mascot-events";
 import { kvGet, kvSet } from "@/lib/kv-db";
 import { normalizeTimeZone } from "@/lib/character-time";
 import { removeCharacterChatReferences } from "@/lib/character-chat-cleanup";
+import { resolveUserIdentity, USER_IDENTITIES_UPDATED_EVENT } from "@/lib/settings-storage";
 
 type ViewType = "list" | "detail";
 
@@ -506,6 +509,12 @@ function CharListView({
   const fileRef = useRef<HTMLInputElement>(null);
   const [showNpcGen, setShowNpcGen] = useState(false);
   const [activeMoveChar, setActiveMoveChar] = useState<Character | null>(null);
+  const [, setUserIdentityVersion] = useState(0);
+  useEffect(() => {
+    const refreshIdentity = () => setUserIdentityVersion(value => value + 1);
+    window.addEventListener(USER_IDENTITIES_UPDATED_EVENT, refreshIdentity);
+    return () => window.removeEventListener(USER_IDENTITIES_UPDATED_EVENT, refreshIdentity);
+  }, []);
 
   // ── 世界卷宗：当前世界派生数据 ──
   const currentGroup = worldGroups.find(g => g.id === currentWorldId)
@@ -516,6 +525,9 @@ function CharListView({
   const worldBgItems = (bgItems || []).filter(item => (item.worldId ?? DEFAULT_CHARACTER_WORLD_ID) === currentWorldId);
   const memberCounts = new Map(worldGroups.map(g => [g.id, g.memberIds.length]));
   const nameById = new Map(characters.map(c => [c.id, c.name || "未命名"]));
+  const currentUserIdentity = resolveUserIdentity();
+  const currentUserName = currentUserIdentity?.name?.trim() || "用户";
+  nameById.set(CHARACTER_WORLD_USER_NODE_ID, currentUserName);
   // 连线与世界观关系同步：同一对角色的多条关系合并为一条线
   const relationLines: CanvasRelationLine[] = (() => {
     const pairs = new Map<string, CanvasRelationLine>();
@@ -688,6 +700,7 @@ function CharListView({
     for (const c of worldCharacters) {
       if (c.canvasX !== undefined) points.push({ x: c.canvasX, y: c.canvasY || 0 });
     }
+    if (currentGroup?.userNode) points.push({ x: currentGroup.userNode.canvasX, y: currentGroup.userNode.canvasY });
     for (const b of worldBgItems) points.push({ x: b.x, y: b.y });
     let next: { x: number; y: number; zoom: number };
     if (points.length === 0) {
@@ -912,6 +925,10 @@ function CharListView({
 
   function handleDragEndChar(id: string, newX: number, newY: number) {
     onUpdateChars(characters.map(c => c.id === id ? { ...c, canvasX: newX, canvasY: newY } : c));
+  }
+  function handleDragEndUserNode(_id: string, newX: number, newY: number) {
+    if (!currentGroup) return;
+    updateCharacterWorldUserNodePosition(currentGroup.id, newX, newY);
   }
   function handleDragEndBg(id: string, newX: number, newY: number) {
     onUpdateBgItems((bgItems || []).map(b => b.id === id ? { ...b, x: newX, y: newY } : b));
@@ -1161,7 +1178,7 @@ function CharListView({
             正在从 <strong>{nameById.get(linkFromId) ?? "?"}</strong> 拉线 · 点另一张照片牵上关系，点空白处取消
           </div>
         )}
-        {worldCharacters.length === 0 && worldBgItems.length === 0 ? (
+        {worldCharacters.length === 0 && worldBgItems.length === 0 && !currentGroup?.userNode ? (
           <div className="char-empty" style={{ zIndex: 100 }}>
             <div className="char-empty-icon">
               <IconCamera size={44} />
@@ -1187,6 +1204,35 @@ function CharListView({
                 {renderBgContent(item)}
               </DraggableNode>
             ))}
+
+            {currentGroup?.userNode ? (
+              <DraggableNode
+                key={`${currentGroup.id}-user-node`}
+                id={CHARACTER_WORLD_USER_NODE_ID}
+                x={currentGroup.userNode.canvasX}
+                y={currentGroup.userNode.canvasY}
+                rot={currentGroup.userNode.canvasRot}
+                zIndex={currentGroup.userNode.canvasZIndex}
+                onDragEnd={handleDragEndUserNode}
+                onEditTap={handleCharEditTap}
+                className={`char-polaroid char-polaroid-board-item char-user-identity-card ratio-portrait ${linkFromId === CHARACTER_WORLD_USER_NODE_ID ? "wt-link-source" : ""}`}
+                w={122}
+                isEditing={isEditing}
+                use2dTransform
+                onDragActiveChange={setIsAnyDragging}
+                onOverTrashChange={setOverTrashBin}
+                zoom={pan.zoom}
+                pinchRef={pinchRef}
+              >
+                <div className="char-polaroid-tape-base char-polaroid-tape-red" style={{ top: -10, width: 46, transform: "translateX(-50%) rotate(-3deg)" }} />
+                <div className="char-user-identity-badge">USER</div>
+                <div className="char-polaroid-img-wrapper">
+                  {currentUserIdentity?.avatarUrl ? <img src={currentUserIdentity.avatarUrl} alt={currentUserName} className="char-polaroid-img" draggable={false} /> : <CharAvatarFallback name={currentUserName} size="100%" />}
+                </div>
+                <div className="char-polaroid-text">{currentUserName}</div>
+                <div className="char-user-identity-summary">{currentUserIdentity?.occupation || currentUserIdentity?.bio || "当前用户身份"}</div>
+              </DraggableNode>
+            ) : null}
 
             {worldCharacters.map((char, idx) => {
               if (char.canvasX === undefined) return null;
@@ -1257,8 +1303,13 @@ function CharListView({
             {/* 把拉线放在所有卡片的最后渲染，并设置超高 zIndex，使其盖在所有照片之上 */}
             <svg className="absolute top-0 left-0 w-[10000px] h-[10000px] pointer-events-none overflow-visible" style={{ zIndex: 99999 }}>
               {relationLines.map(line => {
-                const a = worldCharacters.find(c => c.id === line.aId);
-                const b = worldCharacters.find(c => c.id === line.bId);
+                const userNode = currentGroup?.userNode ? {
+                  id: CHARACTER_WORLD_USER_NODE_ID,
+                  canvasX: currentGroup.userNode.canvasX,
+                  canvasY: currentGroup.userNode.canvasY,
+                } : undefined;
+                const a = line.aId === CHARACTER_WORLD_USER_NODE_ID ? userNode : worldCharacters.find(c => c.id === line.aId);
+                const b = line.bId === CHARACTER_WORLD_USER_NODE_ID ? userNode : worldCharacters.find(c => c.id === line.bId);
                 if (!a || !b || a.canvasX === undefined || a.canvasY === undefined || b.canvasX === undefined || b.canvasY === undefined) return null;
                 const x1 = a.canvasX + 60, y1 = a.canvasY + 60;
                 const x2 = b.canvasX + 60, y2 = b.canvasY + 60;

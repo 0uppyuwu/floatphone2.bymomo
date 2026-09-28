@@ -66,6 +66,7 @@ import {
   getStorySessionOwnerKey,
   hydrateStoryStorage,
   loadStoryGroups,
+  loadStoryGlobalSettings,
   loadStoryMessages,
   loadStorySessions,
   loadStorySessionsForOwner,
@@ -73,8 +74,10 @@ import {
   pushStoryMessage,
   resolveActiveQuickInputScheme,
   saveStorySchemeRepository,
+  saveStoryGlobalSettings,
   STORY_DEFAULT_QUICK_INPUT_OPTIONS,
   STORY_SCHEME_REPO_EVENT,
+  STORY_GLOBAL_SETTINGS_EVENT,
   deleteStoryMessage,
   deleteStoryMessagesFrom,
   editStoryMessage,
@@ -84,6 +87,7 @@ import {
   updateStorySession,
   updateStoryGroup,
   type StoryCharacterSettings,
+  type StoryGlobalSettings,
   type StoryGroup,
   type StoryOwnerType,
 } from "@/lib/story-storage";
@@ -494,6 +498,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
   const [, setStorageVersion] = useState(0);
   // 公用方案仓库版本：仓库内容变化（设置页/小卷工具写入）时刷新方案相关 UI
   const [schemeRepoVersion, setSchemeRepoVersion] = useState(0);
+  const [storyGlobalSettings, setStoryGlobalSettings] = useState<StoryGlobalSettings>({ streamingEnabled: false, timeAware: true });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [floatingPhoneOpen, setFloatingPhoneOpen] = useState(false);
   const [floatingGroupSessionId, setFloatingGroupSessionId] = useState("");
@@ -511,6 +516,9 @@ export function StoryApp({ onClose }: StoryAppProps) {
   const [contextExcludedTagsDraft, setContextExcludedTagsDraft] = useState("");
   // 生成状态按会话记录：避免在 A 会话生成时切到 B 会话也显示"正在生成"
   const [generatingSessionIds, setGeneratingSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [streamingTextBySession, setStreamingTextBySession] = useState<Record<string, string>>({});
+  const streamAccumulatorRef = useRef(new Map<string, string>());
+  const streamPaintFrameRef = useRef(new Map<string, number>());
   // 抽屉滑动手势用 ref 而不是 state：手指按住时 touchmove 每帧都在触发，
   // 逐帧 setState 会让整个剧情页以事件频率重渲染（iOS 上拉到顶/底按住不动时
   // 表现为持续的重排/闪烁）
@@ -572,6 +580,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
     () => sessions.find((session) => session.id === activeSessionId) || null,
     [sessions, activeSessionId]
   );
+  const independentFloatingShell = currentSession?.independentStory === true;
   const storyDisplayName = activeGroup?.name || currentCharacter?.name || "剧情";
   const storyAvatar = ownerMainSession?.storyAvatar || currentCharacter?.avatar || "";
   const uiPrefs = currentSession?.uiPrefs || {};
@@ -604,18 +613,18 @@ export function StoryApp({ onClose }: StoryAppProps) {
       || loadPresets().find((item) => item.builtIn)
       || null;
   }, [activeCharacterId]);
-  const floatingGroupChatCandidates = useMemo(() => activeGroup
+  const floatingGroupChatCandidates = useMemo(() => activeGroup && !independentFloatingShell
     ? loadChatSessions().filter((item) => item.isGroup)
-    : [], [activeGroup, floatingChatVersion]);
+    : [], [activeGroup, floatingChatVersion, independentFloatingShell]);
   const floatingChatSession = useMemo(() => {
-    if (!activeCharacterId) return null;
+    if (!activeCharacterId || independentFloatingShell) return null;
     if (activeGroup) {
       const selected = floatingGroupChatCandidates.find((item) => item.id === floatingGroupSessionId);
       if (selected) return selected;
       return floatingGroupChatCandidates.find((item) => activeGroup.characterIds.every((id) => item.participantIds?.includes(id))) || floatingGroupChatCandidates[0] || null;
     }
     return loadChatSessions().find((item) => item.contactId === activeCharacterId && !item.isGroup) || null;
-  }, [activeCharacterId, activeGroup, floatingChatVersion, floatingGroupChatCandidates, floatingGroupSessionId]);
+  }, [activeCharacterId, activeGroup, floatingChatVersion, floatingGroupChatCandidates, floatingGroupSessionId, independentFloatingShell]);
   const floatingChatMessages = useMemo(() => floatingChatSession
     ? loadChatMessages(floatingChatSession.id).filter((item) => item.role === "user" || item.role === "assistant").slice(-30)
     : [], [floatingChatSession, floatingChatVersion]);
@@ -624,6 +633,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
     const text = message.content.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
     return `${new Date(message.createdAt).toLocaleString()} ${name}：${text}`;
   }).join("\n"), [currentCharacter?.name, floatingChatMessages, userIdentity?.name]);
+  const activeStreamingText = streamingTextBySession[activeSessionId] || "";
   const isGenerating = Boolean(activeSessionId) && generatingSessionIds.has(activeSessionId);
   const latestAssistantMessageId = useMemo(
     () => [...messages].reverse().find((message) => message.role === "assistant")?.id || "",
@@ -639,15 +649,39 @@ export function StoryApp({ onClose }: StoryAppProps) {
     });
   }, []);
 
+  const appendStoryStreamDelta = useCallback((sessionId: string, delta: string) => {
+    streamAccumulatorRef.current.set(sessionId, (streamAccumulatorRef.current.get(sessionId) || "") + delta);
+    if (streamPaintFrameRef.current.has(sessionId)) return;
+    const frame = window.requestAnimationFrame(() => {
+      streamPaintFrameRef.current.delete(sessionId);
+      const nextText = streamAccumulatorRef.current.get(sessionId) || "";
+      setStreamingTextBySession((prev) => ({ ...prev, [sessionId]: nextText }));
+    });
+    streamPaintFrameRef.current.set(sessionId, frame);
+  }, []);
+
+  const clearStoryStream = useCallback((sessionId: string) => {
+    const frame = streamPaintFrameRef.current.get(sessionId);
+    if (frame) window.cancelAnimationFrame(frame);
+    streamPaintFrameRef.current.delete(sessionId);
+    streamAccumulatorRef.current.delete(sessionId);
+    setStreamingTextBySession((prev) => {
+      if (!(sessionId in prev)) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
-    if (!activeGroup) {
+    if (independentFloatingShell || !activeGroup) {
       setFloatingGroupSessionId("");
       return;
     }
     if (floatingGroupSessionId && floatingGroupChatCandidates.some((item) => item.id === floatingGroupSessionId)) return;
     const matching = floatingGroupChatCandidates.find((item) => activeGroup.characterIds.every((id) => item.participantIds?.includes(id)));
     setFloatingGroupSessionId(matching?.id || floatingGroupChatCandidates[0]?.id || "");
-  }, [activeGroup?.id, floatingGroupChatCandidates, floatingGroupSessionId]);
+  }, [activeGroup?.id, floatingGroupChatCandidates, floatingGroupSessionId, independentFloatingShell]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -656,6 +690,8 @@ export function StoryApp({ onClose }: StoryAppProps) {
       voiceRequestIdRef.current += 1;
       voicePlaybackRef.current?.abort();
       if (voiceNoticeTimerRef.current) clearTimeout(voiceNoticeTimerRef.current);
+      for (const frame of streamPaintFrameRef.current.values()) window.cancelAnimationFrame(frame);
+      streamPaintFrameRef.current.clear();
       if (activeSessionIdRef.current) {
         cancelStoryGenerationRun(activeSessionIdRef.current);
       }
@@ -724,8 +760,15 @@ export function StoryApp({ onClose }: StoryAppProps) {
         setActiveCharacterId(initialChar);
         activateStorySession(resolveOwnerSession("single", initialChar, initialChar, [initialChar]));
       }
+      setStoryGlobalSettings(loadStoryGlobalSettings());
       setReady(true);
     });
+  }, []);
+
+  useEffect(() => {
+    const syncGlobalSettings = () => setStoryGlobalSettings(loadStoryGlobalSettings());
+    window.addEventListener(STORY_GLOBAL_SETTINGS_EVENT, syncGlobalSettings);
+    return () => window.removeEventListener(STORY_GLOBAL_SETTINGS_EVENT, syncGlobalSettings);
   }, []);
 
   useEffect(() => {
@@ -1447,13 +1490,15 @@ export function StoryApp({ onClose }: StoryAppProps) {
         sessionFoldTags: currentSession?.foldTags,
         sessionContextExcludedTags: currentSession?.contextExcludedTags,
         settings: currentSession?.settings,
-        floatingChatContext,
+        globalSettings: storyGlobalSettings,
+        floatingChatContext: currentSession?.independentStory ? "" : floatingChatContext,
         participantIds: currentSession?.participantIds || [characterId],
         storyMemory: {
           independent: currentSession?.independentStory,
           inheritRecentMemory: currentSession?.inheritRecentMemory ?? true,
           startedAt: currentSession?.createdAt,
         },
+        onDelta: storyGlobalSettings.streamingEnabled ? (delta) => appendStoryStreamDelta(sessionId, delta) : undefined,
         signal: generationRun.controller.signal,
       });
       if (!isCurrentGeneration()) return;
@@ -1502,6 +1547,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
       }
       setStorageVersion((value) => value + 1);
     } finally {
+      clearStoryStream(sessionId);
       if (finishStoryGenerationRun(sessionId, generationRunId)) {
         markGenerating(sessionId, false);
       }
@@ -1536,13 +1582,15 @@ export function StoryApp({ onClose }: StoryAppProps) {
       sessionFoldTags: session.foldTags,
       sessionContextExcludedTags: session.contextExcludedTags,
       settings: session.settings,
-      floatingChatContext,
+      globalSettings: storyGlobalSettings,
+      floatingChatContext: session.independentStory ? "" : floatingChatContext,
       participantIds: session.participantIds || [characterId],
       storyMemory: {
         independent: session.independentStory,
         inheritRecentMemory: session.inheritRecentMemory ?? true,
         startedAt: session.createdAt,
       },
+      onDelta: storyGlobalSettings.streamingEnabled ? (delta) => appendStoryStreamDelta(sessionId, delta) : undefined,
       signal: generationRun.controller.signal,
     }).then((result) => {
       if (!isCurrentGeneration()) return;
@@ -1573,13 +1621,14 @@ export function StoryApp({ onClose }: StoryAppProps) {
       if (activeSessionIdRef.current === sessionId) setMessages(loadStoryMessages(sessionId));
       setStorageVersion((value) => value + 1);
     }).finally(() => {
+      clearStoryStream(sessionId);
       if (finishStoryGenerationRun(sessionId, generationRunId)) markGenerating(sessionId, false);
     });
-  }, [activeCharacterId, activeSessionId, currentSession?.autoStartPrompt, ready]);
+  }, [activeCharacterId, activeSessionId, currentSession?.autoStartPrompt, ready, storyGlobalSettings.streamingEnabled, storyGlobalSettings.timeAware]);
 
   async function handleFloatingChatSend() {
     const text = floatingChatDraft.trim();
-    if (!text || !activeCharacterId || floatingChatGenerating) return;
+    if (!text || !activeCharacterId || floatingChatGenerating || independentFloatingShell) return;
     const storySessionId = activeSessionId;
     const characterId = activeCharacterId;
     const characterName = currentCharacter?.name || "角色";
@@ -1819,13 +1868,15 @@ export function StoryApp({ onClose }: StoryAppProps) {
         sessionFoldTags: currentSession?.foldTags,
         sessionContextExcludedTags: currentSession?.contextExcludedTags,
         settings: currentSession?.settings,
-        floatingChatContext,
+        globalSettings: storyGlobalSettings,
+        floatingChatContext: currentSession?.independentStory ? "" : floatingChatContext,
         participantIds: currentSession?.participantIds || [characterId],
         storyMemory: {
           independent: currentSession?.independentStory,
           inheritRecentMemory: currentSession?.inheritRecentMemory ?? true,
           startedAt: currentSession?.createdAt,
         },
+        onDelta: storyGlobalSettings.streamingEnabled ? (delta) => appendStoryStreamDelta(sessionId, delta) : undefined,
         signal: generationRun.controller.signal,
       });
       if (!isCurrentGeneration()) return;
@@ -1843,6 +1894,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
       if (activeSessionIdRef.current === sessionId) setMessages(loadStoryMessages(sessionId));
       setStorageVersion(v => v + 1);
     } finally {
+      clearStoryStream(sessionId);
       if (finishStoryGenerationRun(sessionId, generationRunId)) {
         markGenerating(sessionId, false);
       }
@@ -1911,6 +1963,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
           userName={userIdentity?.name || "用户"}
           uiPrefs={uiPrefs}
           settings={storySettings}
+          globalSettings={storyGlobalSettings}
           schemeRepo={schemeRepo}
           boundPreset={boundPreset}
           foldTags={foldTagsDraft}
@@ -1932,6 +1985,10 @@ export function StoryApp({ onClose }: StoryAppProps) {
           onExportAll={handleExportAllStories}
           onUiPrefsChange={(next) => applySessionUpdates({ uiPrefs: next })}
           onSettingsChange={(next) => applySessionUpdates({ settings: next })}
+          onGlobalSettingsChange={(next) => {
+            saveStoryGlobalSettings(next);
+            setStoryGlobalSettings(next);
+          }}
           onSchemeRepoChange={saveStorySchemeRepository}
           onTagsChange={(foldTags, contextExcludedTags) => {
             setFoldTagsDraft(foldTags);
@@ -2080,7 +2137,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
                   const avatarUrl = message.role === "user"
                     ? (userIdentity?.avatarUrl || undefined)
                     : message.role === "assistant"
-                      ? (currentCharacter.avatar || undefined)
+                      ? (storyAvatar || undefined)
                       : undefined;
                   return (
                     <article
@@ -2176,10 +2233,19 @@ export function StoryApp({ onClose }: StoryAppProps) {
                 })}
               </>
             )}
-            {isGenerating ? (
+            {isGenerating && activeStreamingText ? (
+              <article className="story-row story-streaming-row" data-role="assistant" aria-live="polite">
+                <div className="story-msg-head">
+                  <div className="story-avatar-wrap"><Avatar src={storyAvatar || undefined} name={storyDisplayName} size="md" /></div>
+                  <div className="story-msg-meta"><span className="story-msg-name">{storyDisplayName}</span><span className="story-msg-time">正在输出</span></div>
+                </div>
+                <div className="story-bubble-wrap"><div className="story-bubble"><div className="story-streaming-text">{activeStreamingText}<span className="story-streaming-cursor" aria-hidden="true" /></div></div></div>
+              </article>
+            ) : null}
+            {isGenerating && !activeStreamingText ? (
               <StoryGeneratingIndicator
                 characterName={storyDisplayName}
-                avatar={currentCharacter.avatar || undefined}
+                avatar={storyAvatar || undefined}
               />
             ) : null}
           </div>
@@ -2223,14 +2289,16 @@ export function StoryApp({ onClose }: StoryAppProps) {
       {floatingPhoneOpen ? (
         <div className="story-mini-phone-overlay" onClick={() => setFloatingPhoneOpen(false)}>
           <section className="story-mini-phone" onClick={(event) => event.stopPropagation()}>
-            <header><button type="button" onClick={() => setFloatingPhoneOpen(false)}><XMarkIcon width={15} /></button><div><Avatar src={storyAvatar || undefined} name={storyDisplayName} size="sm" /><strong>{activeGroup ? (floatingChatSession?.groupName || "选择群聊") : currentCharacter.name}</strong></div><span /></header>
-            {activeGroup ? (
+            <header><button type="button" onClick={() => setFloatingPhoneOpen(false)}><XMarkIcon width={15} /></button><div><Avatar src={storyAvatar || undefined} name={storyDisplayName} size="sm" /><strong>{independentFloatingShell ? "独立小手机" : activeGroup ? (floatingChatSession?.groupName || "选择群聊") : currentCharacter.name}</strong></div><span /></header>
+            {!independentFloatingShell && activeGroup ? (
               floatingGroupChatCandidates.length ? (
                 <label className="story-mini-phone-group-select"><span>悬浮小手机群聊</span><select value={floatingChatSession?.id || ""} onChange={(event) => setFloatingGroupSessionId(event.target.value)}>{floatingGroupChatCandidates.map((item) => <option key={item.id} value={item.id}>{item.groupName || "未命名群聊"}</option>)}</select></label>
               ) : <p className="story-mini-phone-group-empty">若没有群聊建议先建一个群聊</p>
             ) : null}
             <div className="story-mini-phone-messages" ref={miniPhoneScrollRef}>
-              {floatingChatMessages.length ? floatingChatMessages.map((message) => (
+              {independentFloatingShell ? (
+                <div className="story-mini-phone-isolated"><MiniPhoneIcon size={28} /><strong>未连接线上聊天</strong><p>独立剧情中，小手机只保留外壳，不绑定、读取或同步任何私聊和群聊。</p></div>
+              ) : floatingChatMessages.length ? floatingChatMessages.map((message) => (
                 <div key={message.id} data-role={message.role}>
                   <small>{message.role === "user" ? (userIdentity?.name || "我") : (message.senderName || currentCharacter.name)} · {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</small>
                   <p>{message.content || message.mediaData?.label || (message.mediaType ? `[${message.mediaType}]` : "")}</p>
@@ -2249,10 +2317,10 @@ export function StoryApp({ onClose }: StoryAppProps) {
                     void handleFloatingChatSend();
                   }
                 }}
-                placeholder={activeGroup && !floatingChatSession ? "若没有群聊建议先建一个群聊" : "发消息…"}
-                disabled={floatingChatGenerating || Boolean(activeGroup && !floatingChatSession)}
+                placeholder={independentFloatingShell ? "独立剧情不连接线上聊天" : activeGroup && !floatingChatSession ? "若没有群聊建议先建一个群聊" : "发消息…"}
+                disabled={independentFloatingShell || floatingChatGenerating || Boolean(activeGroup && !floatingChatSession)}
               />
-              <button type="button" onClick={() => { void handleFloatingChatSend(); }} disabled={!floatingChatDraft.trim() || floatingChatGenerating || Boolean(activeGroup && !floatingChatSession)} aria-label="发送消息">
+              <button type="button" onClick={() => { void handleFloatingChatSend(); }} disabled={independentFloatingShell || !floatingChatDraft.trim() || floatingChatGenerating || Boolean(activeGroup && !floatingChatSession)} aria-label="发送消息">
                 {floatingChatGenerating ? <span>···</span> : <PaperAirplaneIcon width={14} />}
               </button>
             </div>
