@@ -23,7 +23,6 @@ import {
 } from "@/lib/chat-session-merge";
 import { kvSet } from "@/lib/kv-db";
 import { ChatFallbackAvatar } from "./chat-fallback-avatar";
-import { ChatScopeSwitcher } from "./chat-scope-switcher";
 import {
     CHAT_SCOPE_UPDATED_EVENT,
     characterMatchesChatScope,
@@ -234,11 +233,6 @@ export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, on
                 }
                 rightAction={
                     <span className="relative flex items-center gap-1" ref={plusMenuRef}>
-                        <ChatScopeSwitcher onScopeChange={(next) => {
-                            setChatScope(next);
-                            setIdentity(resolveChatScopeUserIdentity());
-                            setSessions(loadChatSessions());
-                        }} />
                         <button
                             onClick={() => setShowPlusMenu(!showPlusMenu)}
                             className="page-back-btn"

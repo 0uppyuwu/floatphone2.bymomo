@@ -45,6 +45,7 @@ import { addChatContact, createOrGetSession } from "@/lib/chat-storage";
 import { kvGet, kvSet, kvRemove } from "@/lib/kv-db";
 import { formatWalletAmount, getWalletBalance, loadWalletState, WALLET_UPDATED_EVENT } from "@/lib/wallet-storage";
 import { ChatFallbackAvatar } from "./chat-fallback-avatar";
+import { ChatScopeSwitcher } from "./chat-scope-switcher";
 import {
     Loader2,
     Bell,
@@ -156,6 +157,18 @@ function isBrowserNotificationGranted(): boolean {
         && Notification.permission === "granted";
 }
 
+function readScopedUserStats() {
+    const scope = loadChatScope();
+    const contactsCount = loadChatContacts().filter(contact => characterMatchesChatScope(contact.characterId, scope)).length;
+    const userPostsCount = getAllPosts().filter(post => post.authorType === "user"
+        && (!scope.userIdentityId || !post.userIdentityId || post.userIdentityId === scope.userIdentityId)).length;
+    return {
+        chats: contactsCount,
+        moments: userPostsCount,
+        visitors: 1234 + contactsCount * 17 + userPostsCount * 43,
+    };
+}
+
 /* ══════════════════════════════════════════
    Main export
    ══════════════════════════════════════════ */
@@ -202,21 +215,14 @@ export function UserProfilePanel({ onClose, className }: UserProfilePanelProps) 
         });
 
         // Fetch dynamic user stats
-        try {
-            const scope = loadChatScope();
-            const contactsCount = loadChatContacts().filter(contact => characterMatchesChatScope(contact.characterId, scope)).length;
-            const userPostsCount = getAllPosts().filter(post => post.authorType === "user"
-                && (!scope.userIdentityId || !post.userIdentityId || post.userIdentityId === scope.userIdentityId)).length;
-            setUserStats({
-                chats: contactsCount,
-                moments: userPostsCount,
-                visitors: 1234 + contactsCount * 17 + userPostsCount * 43 // simple deterministic mock equation
-            });
-        } catch (e) { }
+        try { setUserStats(readScopedUserStats()); } catch { }
     }, []);
 
     useEffect(() => {
-        const syncIdentity = () => setIdentity(resolveChatScopeUserIdentity());
+        const syncIdentity = () => {
+            setIdentity(resolveChatScopeUserIdentity());
+            try { setUserStats(readScopedUserStats()); } catch { }
+        };
         window.addEventListener(USER_IDENTITIES_UPDATED_EVENT, syncIdentity);
         window.addEventListener(CHAT_SCOPE_UPDATED_EVENT, syncIdentity);
         return () => {
@@ -366,7 +372,12 @@ export function UserProfilePanel({ onClose, className }: UserProfilePanelProps) 
                     display: none;
                 }
             `}</style>
-            <PageShell title="" onBack={onClose} className={`user-profile-page-root ${className || ""}`}>
+            <PageShell
+                title=""
+                onBack={onClose}
+                rightAction={<ChatScopeSwitcher />}
+                className={`user-profile-page-root ${className || ""}`}
+            >
                 <div className="relative z-[1] w-full max-w-2xl mx-auto flex flex-col pb-8">
                     
                     {/* User Info & Stats Block */}
