@@ -2,7 +2,13 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo, useDeferredValue, useSyncExternalStore } from "react";
 import { loadChatContacts, ChatContact, createOrGetSession, ChatSession, addChatContact, pushChatMessage, loadChatMessages } from "@/lib/chat-storage";
-import { resolveUserIdentity } from "@/lib/settings-storage";
+import {
+    CHAT_SCOPE_UPDATED_EVENT,
+    characterMatchesChatScope,
+    loadChatScope,
+    resolveChatScopeUserIdentity,
+    type ChatScopeState,
+} from "@/lib/chat-scope-storage";
 import { PENDING_REPLY_PREFIX } from "@/lib/friend-request-engine";
 import { loadCharacters } from "@/lib/character-storage";
 import { Character } from "@/lib/character-types";
@@ -57,7 +63,8 @@ export function ChatContactsList({ onCloseApp, onSelectSession, onSelectMascot, 
     const mascotSettings = useSyncExternalStore(subscribeMascotSettings, getMascotSettingsSnapshot, getMascotSettingsSnapshot);
     const [mascotAvatarUrl, setMascotAvatarUrl] = useState(mascotSettings.avatarImage || DEFAULT_MASCOT_AVATAR);
 
-    const identity = useMemo(() => resolveUserIdentity(), []);
+    const [chatScope, setChatScope] = useState<ChatScopeState>(() => loadChatScope());
+    const identity = resolveChatScopeUserIdentity();
     const chars = useMemo(() => loadCharacters(), []);
     const deferredContactFilter = useDeferredValue(contactFilter);
     const bodyRef = useRef<HTMLDivElement>(null);
@@ -105,7 +112,7 @@ export function ChatContactsList({ onCloseApp, onSelectSession, onSelectMascot, 
         const enriched = rawContacts.map(c => ({
             ...c,
             char: chars.find(ch => ch.id === c.characterId)
-        })).filter(c => c.char);
+        })).filter(c => c.char && characterMatchesChatScope(c.characterId, chatScope));
         enriched.sort((a, b) => (a.char?.name || "").localeCompare(b.char?.name || ""));
         setContacts(enriched);
 
@@ -116,9 +123,9 @@ export function ChatContactsList({ onCloseApp, onSelectSession, onSelectMascot, 
         }
         setLatestPost(map);
 
-        setPendingRequests(getPendingFriendRequests());
+        setPendingRequests(getPendingFriendRequests().filter(request => characterMatchesChatScope(request.characterId, chatScope)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [chatScope, chars]);
 
     useEffect(() => {
         refresh();
@@ -126,6 +133,18 @@ export function ChatContactsList({ onCloseApp, onSelectSession, onSelectMascot, 
         window.addEventListener("friend-requests-updated", handler);
         return () => window.removeEventListener("friend-requests-updated", handler);
     }, [refresh]);
+
+    useEffect(() => {
+        const syncScope = () => setChatScope(loadChatScope());
+        window.addEventListener(CHAT_SCOPE_UPDATED_EVENT, syncScope);
+        window.addEventListener("settings-bindings-updated", syncScope);
+        window.addEventListener("character-worlds-updated", syncScope);
+        return () => {
+            window.removeEventListener(CHAT_SCOPE_UPDATED_EVENT, syncScope);
+            window.removeEventListener("settings-bindings-updated", syncScope);
+            window.removeEventListener("character-worlds-updated", syncScope);
+        };
+    }, []);
 
     /** Group contacts by pinyin initial */
     const { grouped, indexLetters } = useMemo(() => {
@@ -543,7 +562,7 @@ export function ChatContactsList({ onCloseApp, onSelectSession, onSelectMascot, 
                                         dispatchFriendRequestUpdated();
                                         const newSession = createOrGetSession(addResult.id);
                                         const isReAdd = loadChatMessages(newSession.id).length > 0;
-                                        const charIdentity = resolveUserIdentity(addResult.id, "chat");
+                                        const charIdentity = resolveChatScopeUserIdentity(addResult.id, "chat");
                                         const userName = charIdentity?.name || identity?.name || "你";
                                         if (isReAdd) {
                                             const charName = addResult.name || "用户";

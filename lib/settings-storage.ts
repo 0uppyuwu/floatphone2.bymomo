@@ -701,6 +701,7 @@ export const DEFAULT_IMAGE_GENERATION_SETTINGS: ImageGenerationSettings = {
         presets: [DEFAULT_NOVELAI_PRESET],
     },
     characterReferences: {},
+    userReferences: {},
     imageHosting: {
         provider: "none",
         imgbbApiKey: "",
@@ -756,8 +757,48 @@ function normalizeImageGenerationSettings(settings: Partial<ImageGenerationSetti
             assetId: typeof rawRef.assetId === "string" && rawRef.assetId ? rawRef.assetId : undefined,
             updatedAt: typeof rawRef.updatedAt === "number" ? rawRef.updatedAt : Date.now(),
             featurePrompt: typeof rawRef.featurePrompt === "string" ? rawRef.featurePrompt : "",
+            novelAiFeaturePromptEnabled: rawRef.novelAiFeaturePromptEnabled !== false,
             enabled: rawRef.enabled !== false,
             selfieOnly: rawRef.selfieOnly !== false,
+            faceCrop: crop && typeof crop.x === "number" && typeof crop.y === "number"
+                ? {
+                    x: Math.max(0, Math.min(1, crop.x)),
+                    y: Math.max(0, Math.min(1, crop.y)),
+                    size,
+                }
+                : { x: 0.27, y: 0.12, size: 0.46 },
+            anchors: Array.isArray(rawRef.anchors)
+                ? rawRef.anchors.flatMap((anchor, index) => {
+                    if (!anchor || typeof anchor !== "object") return [];
+                    const category = anchor.category === "accessory" || anchor.category === "clothing"
+                        || anchor.category === "feature" || anchor.category === "other"
+                        ? anchor.category
+                        : "other";
+                    return [{
+                        id: typeof anchor.id === "string" && anchor.id ? anchor.id : `anchor_${characterId}_${index}`,
+                        name: typeof anchor.name === "string" ? anchor.name : "未命名锚点",
+                        category,
+                        description: typeof anchor.description === "string" ? anchor.description : "",
+                        assetId: typeof anchor.assetId === "string" && anchor.assetId ? anchor.assetId : undefined,
+                        enabled: anchor.enabled !== false,
+                        updatedAt: typeof anchor.updatedAt === "number" ? anchor.updatedAt : Date.now(),
+                    }];
+                })
+                : [],
+        };
+    }
+    const rawUserRefs = settings?.userReferences && typeof settings.userReferences === "object"
+        ? settings.userReferences
+        : {};
+    const userReferences: NonNullable<ImageGenerationSettings["userReferences"]> = {};
+    for (const [identityId, rawRef] of Object.entries(rawUserRefs)) {
+        if (!rawRef || typeof rawRef !== "object") continue;
+        const crop = rawRef.faceCrop;
+        const size = crop && typeof crop.size === "number" ? Math.max(0.18, Math.min(1, crop.size)) : 0.46;
+        userReferences[identityId] = {
+            assetId: typeof rawRef.assetId === "string" && rawRef.assetId ? rawRef.assetId : undefined,
+            updatedAt: typeof rawRef.updatedAt === "number" ? rawRef.updatedAt : Date.now(),
+            enabled: rawRef.enabled !== false,
             faceCrop: crop && typeof crop.x === "number" && typeof crop.y === "number"
                 ? {
                     x: Math.max(0, Math.min(1, crop.x)),
@@ -835,6 +876,7 @@ function normalizeImageGenerationSettings(settings: Partial<ImageGenerationSetti
         activeOpenAiPresetId,
         novelai,
         characterReferences: refs,
+        userReferences,
         imageHosting: {
             ...DEFAULT_IMAGE_GENERATION_SETTINGS.imageHosting,
             ...hosting,

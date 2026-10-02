@@ -7,10 +7,15 @@ import {
     saveFollowUpConfig,
     getDefaultFollowUpConfig,
     loadUserIdentities,
-    resolveUserIdentity,
     saveUserIdentities,
     USER_IDENTITIES_UPDATED_EVENT,
 } from "@/lib/settings-storage";
+import {
+    CHAT_SCOPE_UPDATED_EVENT,
+    characterMatchesChatScope,
+    loadChatScope,
+    resolveChatScopeUserIdentity,
+} from "@/lib/chat-scope-storage";
 import { fileToUserAvatarDataUrl } from "@/lib/user-avatar-image";
 import { loadChatAppSettings, saveChatAppSettings } from "@/lib/chat-storage";
 import type { UserIdentity } from "@/components/settings/user-identity";
@@ -181,7 +186,7 @@ export function UserProfilePanel({ onClose, className }: UserProfilePanelProps) 
     });
 
     useEffect(() => {
-        setIdentity(resolveUserIdentity());
+        setIdentity(resolveChatScopeUserIdentity());
         const settings = loadChatAppSettings();
         const browserGranted = isBrowserNotificationGranted();
         setNotifEnabled(settings.browserNotificationsEnabled === true && browserGranted);
@@ -198,8 +203,10 @@ export function UserProfilePanel({ onClose, className }: UserProfilePanelProps) 
 
         // Fetch dynamic user stats
         try {
-            const contactsCount = loadChatContacts().length;
-            const userPostsCount = getAllPosts().filter(p => p.authorType === "user").length;
+            const scope = loadChatScope();
+            const contactsCount = loadChatContacts().filter(contact => characterMatchesChatScope(contact.characterId, scope)).length;
+            const userPostsCount = getAllPosts().filter(post => post.authorType === "user"
+                && (!scope.userIdentityId || !post.userIdentityId || post.userIdentityId === scope.userIdentityId)).length;
             setUserStats({
                 chats: contactsCount,
                 moments: userPostsCount,
@@ -209,14 +216,18 @@ export function UserProfilePanel({ onClose, className }: UserProfilePanelProps) 
     }, []);
 
     useEffect(() => {
-        const syncIdentity = () => setIdentity(resolveUserIdentity());
+        const syncIdentity = () => setIdentity(resolveChatScopeUserIdentity());
         window.addEventListener(USER_IDENTITIES_UPDATED_EVENT, syncIdentity);
-        return () => window.removeEventListener(USER_IDENTITIES_UPDATED_EVENT, syncIdentity);
+        window.addEventListener(CHAT_SCOPE_UPDATED_EVENT, syncIdentity);
+        return () => {
+            window.removeEventListener(USER_IDENTITIES_UPDATED_EVENT, syncIdentity);
+            window.removeEventListener(CHAT_SCOPE_UPDATED_EVENT, syncIdentity);
+        };
     }, []);
 
     const handleProfileAvatarChange = async (file?: File) => {
         if (!file) return;
-        const currentIdentity = resolveUserIdentity();
+        const currentIdentity = resolveChatScopeUserIdentity();
         if (!currentIdentity) {
             window.alert("请先在设置的“用户信息”中创建用户身份");
             return;

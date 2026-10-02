@@ -33,8 +33,8 @@ import {
     loadPresets,
     loadWorldBooks,
     loadRegexes,
-    resolveUserIdentity,
 } from "./settings-storage";
+import { resolveChatScopeUserIdentity } from "./chat-scope-storage";
 import type { PresetConfig, ApiConfig } from "./settings-types";
 import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
@@ -215,7 +215,7 @@ async function resolveAssemblerInput(
         .filter(Boolean) as typeof allRegexes;
 
     // 6. Resolve user identity via binding cascade
-    const userIdentity = resolveUserIdentity(characterId, "chat");
+    const userIdentity = resolveChatScopeUserIdentity(characterId, "chat");
 
     // 7. Load long-term memories (NPC doesn't share the character's memory)
     let coreMemories = "";
@@ -1244,7 +1244,7 @@ export async function generateMomentPhotoUrl(
 
 function getUserName(characterId?: string): string {
     try {
-        const identity = resolveUserIdentity(characterId, "chat");
+        const identity = resolveChatScopeUserIdentity(characterId, "chat");
         return identity?.name || "我";
     } catch {
         return "我";

@@ -5,6 +5,8 @@ export type MomentPost = {
     id: string;                     // "moment_timestamp_random"
     authorType: "user" | "character";
     authorId: string;               // characterId or "user"
+    /** 发布时使用的用户身份；旧数据缺省时在所有身份筛选中保留可见。 */
+    userIdentityId?: string;
     content: string;
     photoUrl?: string;              // user-uploaded base64 image
     photoDescription?: string;      // AI-generated photo description (for placeholder rendering)

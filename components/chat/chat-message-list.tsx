@@ -23,6 +23,15 @@ import {
 } from "@/lib/chat-session-merge";
 import { kvSet } from "@/lib/kv-db";
 import { ChatFallbackAvatar } from "./chat-fallback-avatar";
+import { ChatScopeSwitcher } from "./chat-scope-switcher";
+import {
+    CHAT_SCOPE_UPDATED_EVENT,
+    characterMatchesChatScope,
+    groupMatchesChatScope,
+    loadChatScope,
+    resolveChatScopeUserIdentity,
+    type ChatScopeState,
+} from "@/lib/chat-scope-storage";
 import {
     getMascotLastPreview,
     getMascotChatSnapshot,
@@ -117,15 +126,27 @@ export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, on
     const [mergePrompt, setMergePrompt] = useState<DuplicateSessionGroup[] | null>(null);
     const [mergeSelected, setMergeSelected] = useState<Set<string>>(new Set());
     const [identity, setIdentity] = useState<UserIdentity | null>(null);
+    const [chatScope, setChatScope] = useState<ChatScopeState>(() => loadChatScope());
     const mascotSettings = useSyncExternalStore(subscribeMascotSettings, getMascotSettingsSnapshot, getMascotSettingsSnapshot);
     const mascotChat = useSyncExternalStore(subscribeMascotChat, getMascotChatSnapshot, getMascotChatSnapshot);
     const [mascotAvatarUrl, setMascotAvatarUrl] = useState(mascotSettings.avatarImage || DEFAULT_MASCOT_AVATAR);
 
     useEffect(() => {
-        setIdentity(resolveUserIdentity());
-        const syncIdentity = () => setIdentity(resolveUserIdentity());
+        setIdentity(resolveChatScopeUserIdentity());
+        const syncIdentity = () => {
+            setChatScope(loadChatScope());
+            setIdentity(resolveChatScopeUserIdentity());
+        };
         window.addEventListener(USER_IDENTITIES_UPDATED_EVENT, syncIdentity);
-        return () => window.removeEventListener(USER_IDENTITIES_UPDATED_EVENT, syncIdentity);
+        window.addEventListener(CHAT_SCOPE_UPDATED_EVENT, syncIdentity);
+        window.addEventListener("settings-bindings-updated", syncIdentity);
+        window.addEventListener("character-worlds-updated", syncIdentity);
+        return () => {
+            window.removeEventListener(USER_IDENTITIES_UPDATED_EVENT, syncIdentity);
+            window.removeEventListener(CHAT_SCOPE_UPDATED_EVENT, syncIdentity);
+            window.removeEventListener("settings-bindings-updated", syncIdentity);
+            window.removeEventListener("character-worlds-updated", syncIdentity);
+        };
     }, []);
 
     useEffect(() => {
@@ -212,7 +233,12 @@ export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, on
                     </div>
                 }
                 rightAction={
-                    <span className="relative" ref={plusMenuRef}>
+                    <span className="relative flex items-center gap-1" ref={plusMenuRef}>
+                        <ChatScopeSwitcher onScopeChange={(next) => {
+                            setChatScope(next);
+                            setIdentity(resolveChatScopeUserIdentity());
+                            setSessions(loadChatSessions());
+                        }} />
                         <button
                             onClick={() => setShowPlusMenu(!showPlusMenu)}
                             className="page-back-btn"
@@ -295,6 +321,11 @@ export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, on
                             const regularItems = [...sessions]
                             .filter(s => {
                                 if (!(s.isGroup || contactIds.has(s.contactId))) return false;
+                                if (s.isGroup) {
+                                    if (!groupMatchesChatScope(s.participantIds, chatScope)) return false;
+                                } else if (!characterMatchesChatScope(s.contactId, chatScope)) {
+                                    return false;
+                                }
                                 if (!hasSessionListContent(s.id)) return false;
                                 if (listTab === "private" && s.isGroup) return false;
                                 if (listTab === "group" && !s.isGroup) return false;
@@ -390,7 +421,7 @@ export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, on
                             {/* 备选：已有角色卡但还不在联系人里，点击直接填入号码 */}
                             {(() => {
                                 const contactIds = new Set(loadChatContacts().map(c => c.characterId));
-                                const candidates = loadCharacters().filter(c => !contactIds.has(c.id));
+                                const candidates = loadCharacters().filter(c => !contactIds.has(c.id) && characterMatchesChatScope(c.id, chatScope));
                                 if (candidates.length === 0 && mascotSettings.chatEnabled) return null;
                                 return (
                                     <div className="menu-group" style={{ marginTop: 12 }}>
@@ -640,7 +671,7 @@ export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, on
                     onClose={() => setShowGroupCreate(false)}
                     onCreate={(groupName, participantIds, isSpectator) => {
                         const newSession = createGroupSession(groupName, participantIds, { isSpectator });
-                        const userName = resolveUserIdentity()?.name ?? "用户";
+                                        const userName = resolveChatScopeUserIdentity(undefined, "group_chat")?.name ?? "用户";
                         const allChars = loadCharacters();
                         const memberNames = participantIds
                             .map(id => allChars.find(c => c.id === id)?.name ?? "未知")
@@ -663,7 +694,7 @@ export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, on
 
             {/* User Profile Panel */}
             {showUserProfile && (
-                <UserProfilePanel onClose={() => { setShowUserProfile(false); setIdentity(resolveUserIdentity()); }} className="absolute inset-0 z-[100]" />
+                <UserProfilePanel onClose={() => { setShowUserProfile(false); setIdentity(resolveChatScopeUserIdentity()); }} className="absolute inset-0 z-[100]" />
             )}
         </div>
     );
@@ -721,7 +752,7 @@ function ContactPicker({ onClose, onSelect }: { onClose: () => void; onSelect: (
 
     const enrichedContacts = contacts
         .map(c => ({ ...c, char: chars.find(ch => ch.id === c.characterId) }))
-        .filter(c => c.char) as (typeof contacts[number] & { char: Character })[];
+        .filter(c => c.char && characterMatchesChatScope(c.characterId)) as (typeof contacts[number] & { char: Character })[];
 
     return (
         <div className="modal-overlay" onClick={onClose}>

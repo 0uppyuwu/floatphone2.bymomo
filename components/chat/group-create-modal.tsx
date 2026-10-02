@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { loadChatContacts } from "@/lib/chat-storage";
 import { loadCharacters } from "@/lib/character-storage";
-import { resolveUserIdentity } from "@/lib/settings-storage";
+import { characterMatchesChatScope, resolveChatScopeUserIdentity } from "@/lib/chat-scope-storage";
 import { Character } from "@/lib/character-types";
 import { Input } from "@/components/ui/form";
 import { ChatFallbackAvatar } from "./chat-fallback-avatar";
@@ -24,7 +24,7 @@ export function GroupCreateModal({ onClose, onCreate }: GroupCreateModalProps) {
 
     const enriched = contacts
         .map(c => ({ ...c, char: chars.find(ch => ch.id === c.characterId) }))
-        .filter(c => c.char) as (typeof contacts[number] & { char: Character })[];
+        .filter(c => c.char && characterMatchesChatScope(c.characterId)) as (typeof contacts[number] & { char: Character })[];
 
     const toggle = (id: string) => {
         setSelectedIds(prev => {
@@ -38,7 +38,7 @@ export function GroupCreateModal({ onClose, onCreate }: GroupCreateModalProps) {
         .map(id => chars.find(c => c.id === id))
         .filter(Boolean) as Character[];
 
-    const userName = resolveUserIdentity(undefined, "group_chat")?.name || "我";
+    const userName = resolveChatScopeUserIdentity(undefined, "group_chat")?.name || "我";
     const defaultName = isSpectator
         ? selectedChars.map(c => c.name).join("、")
         : [...selectedChars.map(c => c.name), userName].join("、");
