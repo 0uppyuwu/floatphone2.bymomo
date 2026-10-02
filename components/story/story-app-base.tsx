@@ -96,11 +96,19 @@ import { flattenCompletionResult, generateChatCompletion } from "@/lib/chat-engi
 import { generateGroupChatCompletion } from "@/lib/group-chat-engine";
 import { parseAIResponse } from "@/lib/rich-message-parser";
 import { SessionCustomCSS } from "@/components/ui/session-custom-css";
+import { MomentsFeed } from "@/components/chat/moments-feed";
+import { GiftPickerModal } from "@/components/chat/gift-picker-modal";
+import { TransferTargetModal } from "@/components/chat/transfer-target-modal";
+import { LocationInputModal, PhotoInputModal, RedPacketModal, VoiceRecordModal } from "@/components/chat/rich-input-modals";
 import { STORY_CSS_EXAMPLE } from "@/lib/css-examples";
 import { applyEditOutputRegex } from "@/lib/llm-prompt-assembler";
 import { MacroEngine } from "@/lib/macro-engine";
 import { kvGet, kvSet, registerKvMigration } from "@/lib/kv-db";
 import { downloadFile } from "@/lib/download-utils";
+import { loadDeliveredShoppingGifts, type ShoppingGiftCandidate } from "@/lib/shopping-gift-utils";
+import { payWithWalletBalance } from "@/lib/wallet-storage";
+import type { ChatMessage, ChatSession } from "@/lib/chat-storage";
+import type { MomentPost } from "@/lib/moments-types";
 import {
   playAudioBlobViaMediaElement,
   resolveVoiceConfig,
@@ -130,6 +138,8 @@ registerKvMigration(STORY_ACTIVE_TARGET_KEY);
 registerKvMigration(STORY_ACTIVE_PAGE_MAP_KEY);
 
 type StoryActiveTarget = { ownerType: StoryOwnerType; ownerId: string };
+type FloatingPhoneTab = "chat" | "moments";
+type FloatingRichKind = "voice" | "image" | "transfer_target" | "transfer" | "location" | "gift" | null;
 
 function loadStoryActivePageMap(): Record<string, string> {
   try {
@@ -501,6 +511,12 @@ export function StoryApp({ onClose }: StoryAppProps) {
   const [storyGlobalSettings, setStoryGlobalSettings] = useState<StoryGlobalSettings>({ streamingEnabled: false, timeAware: true });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [floatingPhoneOpen, setFloatingPhoneOpen] = useState(false);
+  const [floatingPhoneTab, setFloatingPhoneTab] = useState<FloatingPhoneTab>("chat");
+  const [floatingPlusOpen, setFloatingPlusOpen] = useState(false);
+  const [floatingRichKind, setFloatingRichKind] = useState<FloatingRichKind>(null);
+  const [floatingTransferTargetId, setFloatingTransferTargetId] = useState("");
+  const [isolatedMomentDraft, setIsolatedMomentDraft] = useState("");
+  const [isolatedMomentComposerOpen, setIsolatedMomentComposerOpen] = useState(false);
   const [floatingGroupSessionId, setFloatingGroupSessionId] = useState("");
   const [floatingChatDraft, setFloatingChatDraft] = useState("");
   const [floatingChatGenerating, setFloatingChatGenerating] = useState(false);
@@ -572,6 +588,9 @@ export function StoryApp({ onClose }: StoryAppProps) {
   const sessions = loadStorySessions();
   const storyGroups: StoryGroup[] = loadStoryGroups();
   const activeGroup = storyGroups.find((group) => group.id === activeGroupId) || null;
+  const activeGroupCharacters = activeGroup
+    ? activeGroup.characterIds.map((id) => characters.find((character) => character.id === id)).filter(Boolean) as typeof characters
+    : [];
   const activeOwnerType: StoryOwnerType = activeGroup ? "group" : "single";
   const activeOwnerId = activeGroup?.id || activeCharacterId;
   const ownerSessions = activeOwnerId ? loadStorySessionsForOwner(activeOwnerType, activeOwnerId) : [];
@@ -633,10 +652,20 @@ export function StoryApp({ onClose }: StoryAppProps) {
     const text = message.content.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
     return `${new Date(message.createdAt).toLocaleString()} ${name}：${text}`;
   }).join("\n"), [currentCharacter?.name, floatingChatMessages, userIdentity?.name]);
+  const floatingGiftCandidates = useMemo(
+    () => loadDeliveredShoppingGifts({ includeSent: independentFloatingShell }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [floatingChatVersion, independentFloatingShell, floatingPhoneOpen],
+  );
   const activeStreamingText = streamingTextBySession[activeSessionId] || "";
   const isGenerating = Boolean(activeSessionId) && generatingSessionIds.has(activeSessionId);
   const latestAssistantMessageId = useMemo(
     () => [...messages].reverse().find((message) => message.role === "assistant")?.id || "",
+    [messages],
+  );
+  const isolatedPhoneTraces = useMemo(
+    () => messages.filter((message) => message.role === "system"
+      && /^【剧情(?:小手机|朋友圈)/.test(message.rawContent)).slice(-20),
     [messages],
   );
 
@@ -1626,14 +1655,80 @@ export function StoryApp({ onClose }: StoryAppProps) {
     });
   }, [activeCharacterId, activeSessionId, currentSession?.autoStartPrompt, ready, storyGlobalSettings.streamingEnabled, storyGlobalSettings.timeAware]);
 
-  async function handleFloatingChatSend() {
-    const text = floatingChatDraft.trim();
-    if (!text || !activeCharacterId || floatingChatGenerating || independentFloatingShell) return;
-    const storySessionId = activeSessionId;
+  function appendFloatingStoryTrace(title: string, lines: string[], storySessionId = activeSessionId) {
+    if (!storySessionId) return;
+    const stamp = new Date().toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    const transcript = [`【${title} · ${stamp}】`, ...lines].join("\n");
+    pushStoryMessage({ sessionId: storySessionId, role: "system", rawContent: transcript, renderedContent: transcript });
+    if (activeSessionIdRef.current === storySessionId) setMessages(loadStoryMessages(storySessionId));
+    setStorageVersion((value) => value + 1);
+  }
+
+  async function completeFloatingOnlineRound(chatSession: ChatSession, userTrace: string, storySessionId: string) {
     const characterId = activeCharacterId;
     const characterName = currentCharacter?.name || "角色";
+    const history = loadChatMessages(chatSession.id);
+    const replyLines: string[] = [];
+    if (activeGroup) {
+      const results = await generateGroupChatCompletion(chatSession, history, undefined, { appTags: ["group_chat", "text"] });
+      if (!results.length) throw new Error("群聊没有返回可显示的聊天内容");
+      results.forEach((result) => {
+        const parsed = parseAIResponse(result.responseText, []);
+        const parts = parsed.parts.length ? parsed.parts : [{ content: result.responseText }];
+        parts.forEach((part, index) => {
+          pushChatMessage({
+            sessionId: chatSession.id, role: "assistant", content: part.content,
+            mediaType: part.mediaType, mediaData: part.mediaData,
+            senderCharacterId: result.characterId, senderName: result.characterName,
+            origin: "story_floating_phone",
+            statusPanel: index === 0 ? (parsed.statusPanel || undefined) : undefined,
+            innerMonologue: index === 0 ? (parsed.innerMonologue || undefined) : undefined,
+            stateValues: index === 0 && parsed.stateValues.length ? parsed.stateValues : undefined,
+            freshStateValues: index === 0 && parsed.freshStateValues.length ? parsed.freshStateValues : undefined,
+          });
+          const visible = part.content.trim() || part.mediaData?.label || (part.mediaType ? `[${part.mediaType}]` : "");
+          if (visible) replyLines.push(`${result.characterName}：${visible}`);
+        });
+      });
+    } else {
+      const completion = await generateChatCompletion(chatSession, history, { appTags: ["chat", "text"], appId: "chat" });
+      const rawReply = flattenCompletionResult(completion).trim();
+      if (!rawReply) throw new Error("角色没有返回可显示的聊天内容");
+      const previousState = [...history].reverse().find((item) => item.stateValues?.length)?.stateValues || [];
+      const parsed = parseAIResponse(rawReply, previousState);
+      const parts = parsed.parts.length ? parsed.parts : [{ content: rawReply }];
+      parts.forEach((part, index) => {
+        pushChatMessage({
+          sessionId: chatSession.id, role: "assistant", content: part.content,
+          mediaType: part.mediaType, mediaData: part.mediaData,
+          senderCharacterId: characterId, senderName: characterName, origin: "story_floating_phone",
+          statusPanel: index === 0 ? (parsed.statusPanel || undefined) : undefined,
+          innerMonologue: index === 0 ? (parsed.innerMonologue || undefined) : undefined,
+          stateValues: index === 0 && parsed.stateValues.length ? parsed.stateValues : undefined,
+          freshStateValues: index === 0 && parsed.freshStateValues.length ? parsed.freshStateValues : undefined,
+        });
+        const visible = part.content.trim() || part.mediaData?.label || (part.mediaType ? `[${part.mediaType}]` : "");
+        if (visible) replyLines.push(`${characterName}：${visible}`);
+      });
+    }
+    appendFloatingStoryTrace("线上互动", [userTrace, ...replyLines], storySessionId);
+    // 这轮互动已在悬浮小手机中看过，不在剧情 APP 外保留未读红点。
+    markChatSessionRead(chatSession.id);
+    setFloatingChatVersion((value) => value + 1);
+  }
+
+  async function handleFloatingChatSend() {
+    const text = floatingChatDraft.trim();
+    if (!text || !activeCharacterId || floatingChatGenerating) return;
+    const storySessionId = activeSessionId;
+    const characterId = activeCharacterId;
     const userName = userIdentity?.name || "用户";
     setFloatingChatDraft("");
+    setFloatingPlusOpen(false);
+    if (independentFloatingShell) {
+      appendFloatingStoryTrace("剧情小手机", [`${userName}：${text}`], storySessionId);
+      return;
+    }
     setFloatingChatGenerating(true);
     try {
       await hydrateChatStorage();
@@ -1641,65 +1736,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
       if (!chatSession) throw new Error("若没有群聊建议先建一个群聊");
       pushChatMessage({ sessionId: chatSession.id, role: "user", content: text, origin: "story_floating_phone" });
       setFloatingChatVersion((value) => value + 1);
-
-      const history = loadChatMessages(chatSession.id);
-      const replyLines: string[] = [];
-      if (activeGroup) {
-        const results = await generateGroupChatCompletion(chatSession, history, undefined, { appTags: ["group_chat", "text"] });
-        if (!results.length) throw new Error("群聊没有返回可显示的聊天内容");
-        results.forEach((result) => {
-          const parsed = parseAIResponse(result.responseText, []);
-          const parts = parsed.parts.length ? parsed.parts : [{ content: result.responseText }];
-          parts.forEach((part, index) => {
-            pushChatMessage({
-              sessionId: chatSession.id, role: "assistant", content: part.content,
-              mediaType: part.mediaType, mediaData: part.mediaData,
-              senderCharacterId: result.characterId, senderName: result.characterName,
-              origin: "story_floating_phone",
-              statusPanel: index === 0 ? (parsed.statusPanel || undefined) : undefined,
-              innerMonologue: index === 0 ? (parsed.innerMonologue || undefined) : undefined,
-              stateValues: index === 0 && parsed.stateValues.length ? parsed.stateValues : undefined,
-              freshStateValues: index === 0 && parsed.freshStateValues.length ? parsed.freshStateValues : undefined,
-            });
-            const visible = part.content.trim() || part.mediaData?.label || (part.mediaType ? `[${part.mediaType}]` : "");
-            if (visible) replyLines.push(`${result.characterName}：${visible}`);
-          });
-        });
-      } else {
-        const completion = await generateChatCompletion(chatSession, history, { appTags: ["chat", "text"], appId: "chat" });
-        const rawReply = flattenCompletionResult(completion).trim();
-        if (!rawReply) throw new Error("角色没有返回可显示的聊天内容");
-        const previousState = [...history].reverse().find((item) => item.stateValues?.length)?.stateValues || [];
-        const parsed = parseAIResponse(rawReply, previousState);
-        const parts = parsed.parts.length ? parsed.parts : [{ content: rawReply }];
-        parts.forEach((part, index) => {
-          pushChatMessage({
-            sessionId: chatSession.id, role: "assistant", content: part.content,
-            mediaType: part.mediaType, mediaData: part.mediaData,
-            senderCharacterId: characterId, senderName: characterName, origin: "story_floating_phone",
-            statusPanel: index === 0 ? (parsed.statusPanel || undefined) : undefined,
-            innerMonologue: index === 0 ? (parsed.innerMonologue || undefined) : undefined,
-            stateValues: index === 0 && parsed.stateValues.length ? parsed.stateValues : undefined,
-            freshStateValues: index === 0 && parsed.freshStateValues.length ? parsed.freshStateValues : undefined,
-          });
-          const visible = part.content.trim() || part.mediaData?.label || (part.mediaType ? `[${part.mediaType}]` : "");
-          if (visible) replyLines.push(`${characterName}：${visible}`);
-        });
-      }
-
-      const stamp = new Date().toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-      const transcript = [
-        `【线上聊天 · ${stamp}】`,
-        `${userName}：${text}`,
-        ...replyLines,
-      ].join("\n");
-      if (storySessionId) {
-        pushStoryMessage({ sessionId: storySessionId, role: "system", rawContent: transcript, renderedContent: transcript });
-        if (activeSessionIdRef.current === storySessionId) setMessages(loadStoryMessages(storySessionId));
-      }
-      // 这轮聊天就在悬浮小手机里完成，用户已经看过，不在剧情 APP 外保留未读红点。
-      markChatSessionRead(chatSession.id);
-      setFloatingChatVersion((value) => value + 1);
+      await completeFloatingOnlineRound(chatSession, `${userName}：${text}`, storySessionId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "悬浮聊天发送失败";
       const chatSession = floatingChatSession || loadChatSessions().find((item) => item.contactId === characterId && !item.isGroup);
@@ -1709,6 +1746,74 @@ export function StoryApp({ onClose }: StoryAppProps) {
     } finally {
       setFloatingChatGenerating(false);
     }
+  }
+
+  async function handleFloatingRichSend(
+    mediaType: NonNullable<ChatMessage["mediaType"]>,
+    mediaData: ChatMessage["mediaData"],
+    traceText: string,
+    mediaUrl?: string,
+  ) {
+    if (!activeCharacterId || floatingChatGenerating) return;
+    const storySessionId = activeSessionId;
+    const userName = userIdentity?.name || "用户";
+    setFloatingRichKind(null);
+    setFloatingPlusOpen(false);
+    if (independentFloatingShell) {
+      appendFloatingStoryTrace("剧情小手机", [`${userName}${traceText}`], storySessionId);
+      return;
+    }
+    setFloatingChatGenerating(true);
+    try {
+      await hydrateChatStorage();
+      const chatSession = activeGroup ? floatingChatSession : createOrGetSession(activeCharacterId);
+      if (!chatSession) throw new Error("若没有群聊建议先建一个群聊");
+      let nextMediaData = mediaData;
+      if (mediaType === "transfer") {
+        const amount = Number(mediaData?.amount || 0);
+        const payment = payWithWalletBalance({
+          amount,
+          title: "剧情小手机转账",
+          detail: `${activeGroup ? chatSession.groupName || "群聊" : currentCharacter?.name || "角色"}：转账 ${amount.toFixed(2)} 元`,
+          category: "转账",
+        });
+        if (!payment.ok || !payment.transaction) throw new Error(payment.error || "余额不足，无法转账");
+        nextMediaData = { ...mediaData, walletTransactionId: payment.transaction.id };
+      }
+      pushChatMessage({
+        sessionId: chatSession.id,
+        role: "user",
+        content: "",
+        mediaType,
+        mediaData: nextMediaData,
+        ...(mediaUrl ? { mediaUrl } : {}),
+        origin: "story_floating_phone",
+      });
+      setFloatingChatVersion((value) => value + 1);
+      await completeFloatingOnlineRound(chatSession, `${userName}${traceText}`, storySessionId);
+    } catch (error) {
+      showVoiceNotice(error instanceof Error ? error.message : "悬浮互动发送失败");
+    } finally {
+      setFloatingChatGenerating(false);
+      setFloatingTransferTargetId("");
+    }
+  }
+
+  function handleFloatingMomentPublished(post: MomentPost) {
+    const details = [
+      `${userIdentity?.name || "用户"}发布了朋友圈：${post.content}`,
+      post.location ? `位置：${post.location}` : "",
+      post.photoUrl || post.photoDescription ? `图片：${post.photoDescription || "已附图片"}` : "",
+    ].filter(Boolean);
+    appendFloatingStoryTrace("朋友圈", details);
+  }
+
+  function publishIsolatedMoment() {
+    const content = isolatedMomentDraft.trim();
+    if (!content) return;
+    appendFloatingStoryTrace("剧情朋友圈", [`${userIdentity?.name || "用户"}：${content}`]);
+    setIsolatedMomentDraft("");
+    setIsolatedMomentComposerOpen(false);
   }
 
   function handleStopGeneration() {
@@ -2284,47 +2389,114 @@ export function StoryApp({ onClose }: StoryAppProps) {
       />
 
       {storySettings.floatingPhoneEnabled ? (
-        <button className="story-floating-phone-ball" type="button" onClick={() => { setFloatingChatVersion((value) => value + 1); setFloatingPhoneOpen(true); }} aria-label="打开悬浮小手机"><MiniPhoneIcon size={18} /></button>
+        <button className="story-floating-phone-ball" type="button" onClick={() => { setFloatingChatVersion((value) => value + 1); setFloatingPhoneTab("chat"); setFloatingPlusOpen(false); setFloatingPhoneOpen(true); }} aria-label="打开悬浮小手机"><MiniPhoneIcon size={18} /></button>
       ) : null}
       {floatingPhoneOpen ? (
         <div className="story-mini-phone-overlay" onClick={() => setFloatingPhoneOpen(false)}>
           <section className="story-mini-phone" onClick={(event) => event.stopPropagation()}>
-            <header><button type="button" onClick={() => setFloatingPhoneOpen(false)}><XMarkIcon width={15} /></button><div><Avatar src={storyAvatar || undefined} name={storyDisplayName} size="sm" /><strong>{independentFloatingShell ? "独立小手机" : activeGroup ? (floatingChatSession?.groupName || "选择群聊") : currentCharacter.name}</strong></div><span /></header>
-            {!independentFloatingShell && activeGroup ? (
-              floatingGroupChatCandidates.length ? (
-                <label className="story-mini-phone-group-select"><span>悬浮小手机群聊</span><select value={floatingChatSession?.id || ""} onChange={(event) => setFloatingGroupSessionId(event.target.value)}>{floatingGroupChatCandidates.map((item) => <option key={item.id} value={item.id}>{item.groupName || "未命名群聊"}</option>)}</select></label>
-              ) : <p className="story-mini-phone-group-empty">若没有群聊建议先建一个群聊</p>
-            ) : null}
-            <div className="story-mini-phone-messages" ref={miniPhoneScrollRef}>
-              {independentFloatingShell ? (
-                <div className="story-mini-phone-isolated"><MiniPhoneIcon size={28} /><strong>未连接线上聊天</strong><p>独立剧情中，小手机只保留外壳，不绑定、读取或同步任何私聊和群聊。</p></div>
-              ) : floatingChatMessages.length ? floatingChatMessages.map((message) => (
-                <div key={message.id} data-role={message.role}>
-                  <small>{message.role === "user" ? (userIdentity?.name || "我") : (message.senderName || currentCharacter.name)} · {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</small>
-                  <p>{message.content || message.mediaData?.label || (message.mediaType ? `[${message.mediaType}]` : "")}</p>
-                </div>
-              )) : <p className="story-mini-phone-empty">{activeGroup && !floatingChatSession ? "若没有群聊建议先建一个群聊" : "还没有线上聊天记录"}</p>}
-              {floatingChatGenerating ? <div className="story-mini-phone-typing"><i /><i /><i /></div> : null}
-            </div>
-            <div className="story-mini-phone-composer">
-              <textarea
-                rows={1}
-                value={floatingChatDraft}
-                onChange={(event) => setFloatingChatDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void handleFloatingChatSend();
-                  }
-                }}
-                placeholder={independentFloatingShell ? "独立剧情不连接线上聊天" : activeGroup && !floatingChatSession ? "若没有群聊建议先建一个群聊" : "发消息…"}
-                disabled={independentFloatingShell || floatingChatGenerating || Boolean(activeGroup && !floatingChatSession)}
-              />
-              <button type="button" onClick={() => { void handleFloatingChatSend(); }} disabled={independentFloatingShell || !floatingChatDraft.trim() || floatingChatGenerating || Boolean(activeGroup && !floatingChatSession)} aria-label="发送消息">
-                {floatingChatGenerating ? <span>···</span> : <PaperAirplaneIcon width={14} />}
-              </button>
-            </div>
+            {floatingPhoneTab === "moments" && !independentFloatingShell ? (
+              <div className="story-mini-phone-moments">
+                <MomentsFeed compact onCloseApp={() => setFloatingPhoneTab("chat")} onUserPublished={handleFloatingMomentPublished} />
+              </div>
+            ) : (
+              <>
+                <header className="story-mini-phone-header">
+                  <button type="button" onClick={() => floatingPhoneTab === "moments" ? setFloatingPhoneTab("chat") : setFloatingPhoneOpen(false)} aria-label={floatingPhoneTab === "moments" ? "返回聊天" : "关闭小手机"}><XMarkIcon width={15} /></button>
+                  <div className="story-mini-phone-identity"><Avatar src={storyAvatar || undefined} name={storyDisplayName} size="sm" /><strong>{independentFloatingShell ? storyDisplayName : activeGroup ? (floatingChatSession?.groupName || storyDisplayName) : currentCharacter.name}</strong></div>
+                  <button className="story-mini-phone-moments-btn" type="button" onClick={() => { setFloatingPlusOpen(false); setFloatingPhoneTab("moments"); }} aria-label="打开朋友圈" title="朋友圈">
+                    <span aria-hidden="true">◎</span><small>朋友圈</small>
+                  </button>
+                </header>
+
+                {floatingPhoneTab === "moments" ? (
+                  <div className="story-mini-phone-isolated-moments">
+                    <div className="story-mini-phone-local-title">
+                      <div><strong>剧情朋友圈</strong><small>仅保留在当前独立剧情</small></div>
+                      <button type="button" onClick={() => setIsolatedMomentComposerOpen(true)}>发布</button>
+                    </div>
+                    <div className="story-mini-phone-local-feed">
+                      {isolatedPhoneTraces.filter((message) => message.rawContent.startsWith("【剧情朋友圈")).length ? isolatedPhoneTraces.filter((message) => message.rawContent.startsWith("【剧情朋友圈")).reverse().map((message) => (
+                        <article key={message.id}><Avatar src={userIdentity?.avatarUrl} name={userIdentity?.name || "用户"} size="sm" /><div><strong>{userIdentity?.name || "用户"}</strong><p>{message.rawContent.split("\n").slice(1).join("\n")}</p><small>{formatStoryTime(message.createdAt)}</small></div></article>
+                      )) : <p className="story-mini-phone-empty">还没有本剧情朋友圈</p>}
+                    </div>
+                    {isolatedMomentComposerOpen ? (
+                      <div className="story-mini-phone-local-compose">
+                        <textarea value={isolatedMomentDraft} onChange={(event) => setIsolatedMomentDraft(event.target.value)} placeholder="这一刻的想法…" autoFocus />
+                        <div><button type="button" onClick={() => setIsolatedMomentComposerOpen(false)}>取消</button><button type="button" disabled={!isolatedMomentDraft.trim()} onClick={publishIsolatedMoment}>发表</button></div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <>
+                    {!independentFloatingShell && activeGroup ? (
+                      floatingGroupChatCandidates.length ? (
+                        <label className="story-mini-phone-group-select"><span>悬浮小手机群聊</span><select value={floatingChatSession?.id || ""} onChange={(event) => setFloatingGroupSessionId(event.target.value)}>{floatingGroupChatCandidates.map((item) => <option key={item.id} value={item.id}>{item.groupName || "未命名群聊"}</option>)}</select></label>
+                      ) : <p className="story-mini-phone-group-empty">若没有群聊建议先建一个群聊</p>
+                    ) : null}
+                    <div className="story-mini-phone-messages" ref={miniPhoneScrollRef}>
+                      {independentFloatingShell ? (
+                        isolatedPhoneTraces.length ? isolatedPhoneTraces.map((message) => (
+                          <div key={message.id} data-role="user"><small>{formatStoryTime(message.createdAt)}</small><p>{message.rawContent.split("\n").slice(1).join("\n")}</p></div>
+                        )) : <div className="story-mini-phone-isolated"><MiniPhoneIcon size={28} /><strong>独立剧情小手机</strong><p>不绑定、读取或同步线上聊天；这里的操作只会成为当前剧情痕迹。</p></div>
+                      ) : floatingChatMessages.length ? floatingChatMessages.map((message) => (
+                        <div key={message.id} data-role={message.role}>
+                          <small>{message.role === "user" ? (userIdentity?.name || "我") : (message.senderName || currentCharacter.name)} · {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</small>
+                          <p>{message.content || message.mediaData?.label || (message.mediaType ? `[${message.mediaType}]` : "")}</p>
+                        </div>
+                      )) : <p className="story-mini-phone-empty">{activeGroup && !floatingChatSession ? "若没有群聊建议先建一个群聊" : "还没有线上聊天记录"}</p>}
+                      {floatingChatGenerating ? <div className="story-mini-phone-typing"><i /><i /><i /></div> : null}
+                    </div>
+                    {floatingPlusOpen ? (
+                      <div className="story-mini-phone-plus-panel">
+                        <button type="button" onClick={() => setFloatingRichKind("voice")}><span>🎙️</span><small>语音</small></button>
+                        <button type="button" onClick={() => setFloatingRichKind("image")}><span>🖼️</span><small>图片</small></button>
+                        <button type="button" onClick={() => setFloatingRichKind(activeGroup ? "transfer_target" : "transfer")}><span>¥</span><small>转账</small></button>
+                        <button type="button" onClick={() => setFloatingRichKind("location")}><span>📍</span><small>位置</small></button>
+                        <button type="button" onClick={() => setFloatingRichKind("gift")}><span>🎁</span><small>礼物</small></button>
+                      </div>
+                    ) : null}
+                    <div className="story-mini-phone-composer">
+                      <button className="story-mini-phone-plus-btn" type="button" onClick={() => setFloatingPlusOpen((value) => !value)} aria-label="更多功能"><PlusIcon width={14} /></button>
+                      <textarea
+                        rows={1}
+                        value={floatingChatDraft}
+                        onChange={(event) => setFloatingChatDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" && !event.shiftKey) {
+                            event.preventDefault();
+                            void handleFloatingChatSend();
+                          }
+                        }}
+                        placeholder={independentFloatingShell ? "输入只写入本剧情…" : activeGroup && !floatingChatSession ? "若没有群聊建议先建一个群聊" : "发消息…"}
+                        disabled={floatingChatGenerating || Boolean(!independentFloatingShell && activeGroup && !floatingChatSession)}
+                      />
+                      <button type="button" onClick={() => { void handleFloatingChatSend(); }} disabled={!floatingChatDraft.trim() || floatingChatGenerating || Boolean(!independentFloatingShell && activeGroup && !floatingChatSession)} aria-label="发送消息">
+                        {floatingChatGenerating ? <span>···</span> : <PaperAirplaneIcon width={14} />}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
           </section>
+
+          {floatingRichKind === "voice" ? <VoiceRecordModal characterId={activeCharacterId} onClose={() => setFloatingRichKind(null)} onSend={(text, audioDataUrl) => { void handleFloatingRichSend("audio", { label: text }, `发送了一条语音：${text}`, audioDataUrl); }} /> : null}
+          {floatingRichKind === "image" ? <PhotoInputModal onClose={() => setFloatingRichKind(null)} onSend={(description, imageDataUrl) => { void handleFloatingRichSend("image", { label: description || "图片" }, `发送了一张图片${description ? `：${description}` : ""}`, imageDataUrl); }} /> : null}
+          {floatingRichKind === "transfer_target" ? <TransferTargetModal participants={activeGroupCharacters} onClose={() => setFloatingRichKind(null)} onSelect={(character) => { setFloatingTransferTargetId(character.id); setFloatingRichKind("transfer"); }} /> : null}
+          {floatingRichKind === "transfer" ? <RedPacketModal mode="transfer" onClose={() => { setFloatingRichKind(null); setFloatingTransferTargetId(""); }} onSend={(amount, label) => {
+            const target = activeGroupCharacters.find((character) => character.id === floatingTransferTargetId);
+            void handleFloatingRichSend("transfer", { amount, label, status: "pending", ...(target ? { recipientId: target.id, recipientName: target.name } : {}) }, `向${target?.name || currentCharacter?.name || "对方"}转账 ¥${amount.toFixed(2)}${label ? `（${label}）` : ""}`);
+          }} /> : null}
+          {floatingRichKind === "location" ? <LocationInputModal onClose={() => setFloatingRichKind(null)} onSend={(location) => { void handleFloatingRichSend("location", { label: location }, `分享了位置：${location}`); }} /> : null}
+          {floatingRichKind === "gift" ? <GiftPickerModal gifts={floatingGiftCandidates} isGroup={Boolean(activeGroup)} recipients={activeGroupCharacters} onClose={() => setFloatingRichKind(null)} onSend={(gift: ShoppingGiftCandidate, recipient) => {
+            void handleFloatingRichSend("gift", {
+              label: gift.productName, giftName: gift.productName, shoppingGiftId: gift.id, giftOrderId: gift.orderId,
+              giftItemId: gift.itemId, giftMerchantLabel: gift.merchantLabel, giftPriceLabel: gift.priceLabel,
+              giftPreviewIcon: gift.previewIcon, giftTone: gift.tone, giftDeliveredAt: gift.deliveredAt,
+              giftSentAt: new Date().toISOString(), senderName: userIdentity?.name || "用户",
+              ...(recipient ? { recipientId: recipient.id, recipientName: recipient.name } : {}),
+            }, `向${recipient?.name || currentCharacter?.name || "对方"}送出礼物：${gift.productName}`);
+          }} /> : null}
         </div>
       ) : null}
 

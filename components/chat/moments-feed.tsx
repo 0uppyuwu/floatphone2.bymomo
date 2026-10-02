@@ -67,9 +67,11 @@ type ActiveMomentComposer = {
 
 type MomentsFeedProps = {
     onCloseApp: () => void;
+    compact?: boolean;
+    onUserPublished?: (post: MomentPost) => void;
 };
 
-export function MomentsFeed({ onCloseApp }: MomentsFeedProps) {
+export function MomentsFeed({ onCloseApp, compact = false, onUserPublished }: MomentsFeedProps) {
     const [posts, setPosts] = useState<MomentPost[]>([]);
     const [showCompose, setShowCompose] = useState(false);
     const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -389,10 +391,11 @@ export function MomentsFeed({ onCloseApp }: MomentsFeedProps) {
         }
     };
 
-    const handlePublished = () => {
+    const handlePublished = (post: MomentPost) => {
         setShowCompose(false);
         refreshPosts();
         window.dispatchEvent(new CustomEvent("moments-updated"));
+        onUserPublished?.(post);
     };
 
     const handleCoverUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -456,7 +459,7 @@ export function MomentsFeed({ onCloseApp }: MomentsFeedProps) {
                     </svg>
                 </button>
             }
-            className={`moments-feed-page ${headerScrolled ? "is-scrolled" : ""} ${activeComposer ? "has-comment-modal" : ""}`}
+            className={`moments-feed-page ${compact ? "moments-feed-compact" : ""} ${headerScrolled ? "is-scrolled" : ""} ${activeComposer ? "has-comment-modal" : ""}`}
             bodyRef={scrollRef}
             footer={showCompose ? (
                 <MomentsCompose

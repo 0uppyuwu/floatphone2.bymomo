@@ -8,10 +8,11 @@ import { onUserPost } from "@/lib/moments-engine";
 import { characterMatchesChatScope, loadChatScope, resolveChatScopeUserIdentity } from "@/lib/chat-scope-storage";
 import { saveChatImageToIndexedDB, getChatImageFromIndexedDB } from "@/lib/chat-asset-storage";
 import { ChatFallbackAvatar } from "./chat-fallback-avatar";
+import type { MomentPost } from "@/lib/moments-types";
 
 type Props = {
     onClose: () => void;
-    onPublished: () => void;
+    onPublished: (post: MomentPost) => void;
 };
 
 export function MomentsCompose({ onClose, onPublished }: Props) {
@@ -180,7 +181,7 @@ export function MomentsCompose({ onClose, onPublished }: Props) {
         if (post) {
             try { onUserPost(post); } catch (e) { console.warn("[Compose] onUserPost error:", e); }
         }
-        onPublished();
+        if (post) onPublished(post);
     };
 
     const canPublish = text.trim().length > 0;
