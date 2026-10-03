@@ -33,6 +33,8 @@ export type StoryUiPrefs = {
 
 /** 剧情 APP 全局生成能力；不跟角色/多人组/分线走，所有剧情共用。 */
 export type StoryGlobalSettings = {
+  /** 剧情页打开期间，中止当前剧情角色正在进行的线上主动/追发 API 请求。 */
+  interruptProactiveDuringStory: boolean;
   /** 生成过程中实时显示正文增量；默认关闭，避免不支持 SSE 的旧接口受影响。 */
   streamingEnabled: boolean;
   /** 每轮明确注入当前日期时间，并让历史消息按时间语义参与判断。 */
@@ -44,6 +46,7 @@ const STORY_GLOBAL_SETTINGS_KEY = "ai_phone_story_global_settings_v1";
 registerKvMigration(STORY_GLOBAL_SETTINGS_KEY);
 
 const DEFAULT_STORY_GLOBAL_SETTINGS: StoryGlobalSettings = {
+  interruptProactiveDuringStory: false,
   streamingEnabled: false,
   timeAware: true,
 };
@@ -52,6 +55,7 @@ export function loadStoryGlobalSettings(): StoryGlobalSettings {
   try {
     const parsed = JSON.parse(kvGet(STORY_GLOBAL_SETTINGS_KEY) || "{}") as Partial<StoryGlobalSettings>;
     return {
+      interruptProactiveDuringStory: parsed.interruptProactiveDuringStory === true,
       streamingEnabled: parsed.streamingEnabled === true,
       timeAware: parsed.timeAware !== false,
     };
@@ -62,6 +66,7 @@ export function loadStoryGlobalSettings(): StoryGlobalSettings {
 
 export function saveStoryGlobalSettings(settings: StoryGlobalSettings): void {
   const normalized: StoryGlobalSettings = {
+    interruptProactiveDuringStory: settings.interruptProactiveDuringStory === true,
     streamingEnabled: settings.streamingEnabled === true,
     timeAware: settings.timeAware !== false,
   };
@@ -422,6 +427,8 @@ export type StoryMessage = {
   id: string;
   sessionId: string;
   role: StoryMessageRole;
+  /** 仅控制送入剧情模型时的身份；可让系统样式卡片以用户行为进入上下文。 */
+  contextRole?: StoryMessageRole;
   rawContent: string;
   renderedContent?: string;
   storySummary?: string;

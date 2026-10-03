@@ -93,6 +93,7 @@ import {
 } from "@/lib/story-storage";
 import { createOrGetSession, hydrateChatStorage, loadChatMessages, loadChatSessions, markChatSessionRead, pushChatMessage } from "@/lib/chat-storage";
 import { flattenCompletionResult, generateChatCompletion } from "@/lib/chat-engine";
+import { cancelBackgroundGeneration } from "@/lib/follow-up-service";
 import { generateGroupChatCompletion } from "@/lib/group-chat-engine";
 import { parseAIResponse } from "@/lib/rich-message-parser";
 import { SessionCustomCSS } from "@/components/ui/session-custom-css";
@@ -519,7 +520,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
   const [, setStorageVersion] = useState(0);
   // 公用方案仓库版本：仓库内容变化（设置页/小卷工具写入）时刷新方案相关 UI
   const [schemeRepoVersion, setSchemeRepoVersion] = useState(0);
-  const [storyGlobalSettings, setStoryGlobalSettings] = useState<StoryGlobalSettings>({ streamingEnabled: false, timeAware: true });
+  const [storyGlobalSettings, setStoryGlobalSettings] = useState<StoryGlobalSettings>({ interruptProactiveDuringStory: false, streamingEnabled: false, timeAware: true });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [floatingPhoneOpen, setFloatingPhoneOpen] = useState(false);
   const [floatingPhoneTab, setFloatingPhoneTab] = useState<FloatingPhoneTab>("chat");
@@ -669,6 +670,12 @@ export function StoryApp({ onClose }: StoryAppProps) {
     [floatingChatVersion, independentFloatingShell, floatingPhoneOpen],
   );
   const activeStreamingText = streamingTextBySession[activeSessionId] || "";
+  const activeStoryParticipantKey = (currentSession?.participantIds?.length
+    ? currentSession.participantIds
+    : activeGroup?.characterIds?.length
+      ? activeGroup.characterIds
+      : [activeCharacterId]
+  ).filter(Boolean).slice().sort().join("|");
   const isGenerating = Boolean(activeSessionId) && generatingSessionIds.has(activeSessionId);
   const latestAssistantMessageId = useMemo(
     () => [...messages].reverse().find((message) => message.role === "assistant")?.id || "",
@@ -810,6 +817,27 @@ export function StoryApp({ onClose }: StoryAppProps) {
     window.addEventListener(STORY_GLOBAL_SETTINGS_EVENT, syncGlobalSettings);
     return () => window.removeEventListener(STORY_GLOBAL_SETTINGS_EVENT, syncGlobalSettings);
   }, []);
+
+  useEffect(() => {
+    if (!ready || !storyGlobalSettings.interruptProactiveDuringStory || !activeStoryParticipantKey) return;
+    const participantIds = new Set(activeStoryParticipantKey.split("|").filter(Boolean));
+    const shouldInterrupt = (session: ChatSession) => session.isGroup
+      ? Boolean(session.participantIds?.some((id) => participantIds.has(id)))
+      : participantIds.has(session.contactId);
+    const interruptSession = (sessionId: string) => {
+      const session = loadChatSessions().find((item) => item.id === sessionId);
+      if (session && shouldInterrupt(session)) cancelBackgroundGeneration(sessionId);
+    };
+
+    // 开关刚开启或切换见面对象时，也要截断已经在途的主动请求。
+    loadChatSessions().filter(shouldInterrupt).forEach((session) => cancelBackgroundGeneration(session.id));
+    const handleBackgroundStart = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (sessionId) interruptSession(sessionId);
+    };
+    window.addEventListener("followup-started", handleBackgroundStart);
+    return () => window.removeEventListener("followup-started", handleBackgroundStart);
+  }, [activeStoryParticipantKey, ready, storyGlobalSettings.interruptProactiveDuringStory]);
 
   useEffect(() => {
     setAutoReading(false);
@@ -1666,11 +1694,17 @@ export function StoryApp({ onClose }: StoryAppProps) {
     });
   }, [activeCharacterId, activeSessionId, currentSession?.autoStartPrompt, ready, storyGlobalSettings.streamingEnabled, storyGlobalSettings.timeAware]);
 
-  function appendFloatingStoryTrace(title: string, lines: string[], storySessionId = activeSessionId, renderedContent?: string) {
+  function appendFloatingStoryTrace(
+    title: string,
+    lines: string[],
+    storySessionId = activeSessionId,
+    renderedContent?: string,
+    contextRole?: StoryMessage["role"],
+  ) {
     if (!storySessionId) return;
     const stamp = new Date().toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
     const transcript = [`【${title} · ${stamp}】`, ...lines].join("\n");
-    pushStoryMessage({ sessionId: storySessionId, role: "system", rawContent: transcript, renderedContent: renderedContent || transcript });
+    pushStoryMessage({ sessionId: storySessionId, role: "system", contextRole, rawContent: transcript, renderedContent: renderedContent || transcript });
     if (activeSessionIdRef.current === storySessionId) setMessages(loadStoryMessages(storySessionId));
     setStorageVersion((value) => value + 1);
   }
@@ -1709,7 +1743,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
       `发送人：${userName}`,
       `发送到：${targetName}`,
       `内容：${detail}`,
-    ], activeSessionIdRef.current, rendered);
+    ], activeSessionIdRef.current, rendered, "user");
   }
 
   async function completeFloatingOnlineRound(chatSession: ChatSession, userTrace: string, storySessionId: string) {
@@ -1808,7 +1842,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
     setFloatingRichKind(null);
     setFloatingPlusOpen(false);
     if (independentFloatingShell) {
-      appendFloatingStoryTrace("剧情小手机", [`${userName}${traceText}`], storySessionId);
+      appendFloatingStoryTrace("剧情小手机", [`${userName}${traceText}`], storySessionId, undefined, "user");
       return;
     }
     setFloatingChatGenerating(true);
@@ -1856,13 +1890,13 @@ export function StoryApp({ onClose }: StoryAppProps) {
       post.photoUrl || post.photoDescription ? `图片：${post.photoDescription || "已附图片"}` : "",
     ].filter(Boolean);
     const rendered = `<div class="story-online-trace-card" data-trace-kind="动态"><div class="story-online-trace-head"><strong>动态</strong><span>${escapeStoryTraceHtml(createdAt)}</span></div><div class="story-online-trace-body"><b>${escapeStoryTraceHtml(userName)}</b><p>${escapeStoryTraceHtml(post.content)}</p>${post.location ? `<small>位置 · ${escapeStoryTraceHtml(post.location)}</small>` : ""}${post.photoUrl || post.photoDescription ? `<small>图片 · ${escapeStoryTraceHtml(post.photoDescription || "已附图片")}</small>` : ""}</div></div>`;
-    appendFloatingStoryTrace("动态", details, activeSessionIdRef.current, rendered);
+    appendFloatingStoryTrace("动态", details, activeSessionIdRef.current, rendered, "user");
   }
 
   function publishIsolatedMoment() {
     const content = isolatedMomentDraft.trim();
     if (!content) return;
-    appendFloatingStoryTrace("剧情朋友圈", [`${userIdentity?.name || "用户"}：${content}`]);
+    appendFloatingStoryTrace("剧情朋友圈", [`${userIdentity?.name || "用户"}：${content}`], activeSessionId, undefined, "user");
     setIsolatedMomentDraft("");
     setIsolatedMomentComposerOpen(false);
   }

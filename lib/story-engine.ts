@@ -134,7 +134,7 @@ function toHistoryMessage(message: StoryMessage, contextExcludedTags?: string): 
   return {
     id: message.id,
     sessionId: message.sessionId,
-    role: message.role,
+    role: message.contextRole || message.role,
     content: stripContextExcludedTags(message.rawContent, contextExcludedTags),
     status: "sent",
     createdAt: message.createdAt,

@@ -574,6 +574,12 @@ export function StorySettingsPage(props: StorySettingsPageProps) {
 
         <SettingCard title="通用生成能力" hint="这里的开关由所有角色、多人组、主线和分线共同使用">
           <ToggleRow
+            title="剧情时截断当前角色后台主动发消息活动"
+            detail="开启后，剧情页面进行期间检测到当前角色正在主动发消息或追加消息，会立即中止对应的后台 API 请求"
+            checked={props.globalSettings.interruptProactiveDuringStory}
+            onChange={(interruptProactiveDuringStory) => props.onGlobalSettingsChange({ ...props.globalSettings, interruptProactiveDuringStory })}
+          />
+          <ToggleRow
             title="通用流式输出"
             detail="开启后剧情正文会随着模型返回实时显示；不支持流式的接口会在未输出内容时自动回退普通生成"
             checked={props.globalSettings.streamingEnabled}
