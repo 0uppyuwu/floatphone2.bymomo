@@ -1816,6 +1816,12 @@ export function StoryApp({ onClose }: StoryAppProps) {
     setIsolatedMomentComposerOpen(false);
   }
 
+  function openFloatingRichPanel(kind: Exclude<FloatingRichKind, null>) {
+    // 与聊天室一致：选择功能后先收起“+”菜单，再显示对应操作面板。
+    setFloatingPlusOpen(false);
+    setFloatingRichKind(kind);
+  }
+
   function handleStopGeneration() {
     if (!activeSessionId) return;
     const cancelled = cancelStoryGenerationRun(activeSessionId);
@@ -2403,8 +2409,14 @@ export function StoryApp({ onClose }: StoryAppProps) {
                 <header className="story-mini-phone-header">
                   <button type="button" onClick={() => floatingPhoneTab === "moments" ? setFloatingPhoneTab("chat") : setFloatingPhoneOpen(false)} aria-label={floatingPhoneTab === "moments" ? "返回聊天" : "关闭小手机"}><XMarkIcon width={15} /></button>
                   <div className="story-mini-phone-identity"><Avatar src={storyAvatar || undefined} name={storyDisplayName} size="sm" /><strong>{independentFloatingShell ? storyDisplayName : activeGroup ? (floatingChatSession?.groupName || storyDisplayName) : currentCharacter.name}</strong></div>
-                  <button className="story-mini-phone-moments-btn" type="button" onClick={() => { setFloatingPlusOpen(false); setFloatingPhoneTab("moments"); }} aria-label="打开朋友圈" title="朋友圈">
-                    <span aria-hidden="true">◎</span><small>朋友圈</small>
+                  <button className="story-mini-phone-moments-btn" type="button" onClick={() => { setFloatingPlusOpen(false); setFloatingPhoneTab("moments"); }} aria-label="打开动态" title="动态">
+                    <span aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="4" />
+                        <circle cx="8.5" cy="8.5" r="1.5" />
+                        <path d="m21 15-5-5L5 21" />
+                      </svg>
+                    </span><small>动态</small>
                   </button>
                 </header>
 
@@ -2447,12 +2459,27 @@ export function StoryApp({ onClose }: StoryAppProps) {
                       {floatingChatGenerating ? <div className="story-mini-phone-typing"><i /><i /><i /></div> : null}
                     </div>
                     {floatingPlusOpen ? (
-                      <div className="story-mini-phone-plus-panel">
-                        <button type="button" onClick={() => setFloatingRichKind("voice")}><span>🎙️</span><small>语音</small></button>
-                        <button type="button" onClick={() => setFloatingRichKind("image")}><span>🖼️</span><small>图片</small></button>
-                        <button type="button" onClick={() => setFloatingRichKind(activeGroup ? "transfer_target" : "transfer")}><span>¥</span><small>转账</small></button>
-                        <button type="button" onClick={() => setFloatingRichKind("location")}><span>📍</span><small>位置</small></button>
-                        <button type="button" onClick={() => setFloatingRichKind("gift")}><span>🎁</span><small>礼物</small></button>
+                      <div className="chat-plus-menu story-mini-phone-plus-panel">
+                        <button className="chat-plus-menu-item" type="button" onClick={() => openFloatingRichPanel("voice")}>
+                          <span className="chat-plus-icon-box"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" /><line x1="8" y1="22" x2="16" y2="22" /></svg></span>
+                          <span>语音条</span>
+                        </button>
+                        <button className="chat-plus-menu-item" type="button" onClick={() => openFloatingRichPanel("image")}>
+                          <span className="chat-plus-icon-box"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg></span>
+                          <span>照片墙</span>
+                        </button>
+                        <button className="chat-plus-menu-item" type="button" onClick={() => openFloatingRichPanel(activeGroup ? "transfer_target" : "transfer")}>
+                          <span className="chat-plus-icon-box"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10" /><text x="12" y="16" textAnchor="middle" fontSize="12" fill="currentColor" stroke="none">¥</text></svg></span>
+                          <span>转账</span>
+                        </button>
+                        <button className="chat-plus-menu-item" type="button" onClick={() => openFloatingRichPanel("location")}>
+                          <span className="chat-plus-icon-box"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" /></svg></span>
+                          <span>位置</span>
+                        </button>
+                        <button className="chat-plus-menu-item" type="button" onClick={() => openFloatingRichPanel("gift")}>
+                          <span className="chat-plus-icon-box"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="8" width="18" height="13" rx="2" /><path d="M12 8v13M3 12h18M7.5 8C5 8 4 6.8 4 5.5S5 3 6.5 3C9 3 12 8 12 8s3-5 5.5-5C19 3 20 4.2 20 5.5S19 8 16.5 8" /></svg></span>
+                          <span>礼物</span>
+                        </button>
                       </div>
                     ) : null}
                     <div className="story-mini-phone-composer">
@@ -2480,23 +2507,27 @@ export function StoryApp({ onClose }: StoryAppProps) {
             )}
           </section>
 
-          {floatingRichKind === "voice" ? <VoiceRecordModal characterId={activeCharacterId} onClose={() => setFloatingRichKind(null)} onSend={(text, audioDataUrl) => { void handleFloatingRichSend("audio", { label: text }, `发送了一条语音：${text}`, audioDataUrl); }} /> : null}
-          {floatingRichKind === "image" ? <PhotoInputModal onClose={() => setFloatingRichKind(null)} onSend={(description, imageDataUrl) => { void handleFloatingRichSend("image", { label: description || "图片" }, `发送了一张图片${description ? `：${description}` : ""}`, imageDataUrl); }} /> : null}
-          {floatingRichKind === "transfer_target" ? <TransferTargetModal participants={activeGroupCharacters} onClose={() => setFloatingRichKind(null)} onSelect={(character) => { setFloatingTransferTargetId(character.id); setFloatingRichKind("transfer"); }} /> : null}
-          {floatingRichKind === "transfer" ? <RedPacketModal mode="transfer" onClose={() => { setFloatingRichKind(null); setFloatingTransferTargetId(""); }} onSend={(amount, label) => {
-            const target = activeGroupCharacters.find((character) => character.id === floatingTransferTargetId);
-            void handleFloatingRichSend("transfer", { amount, label, status: "pending", ...(target ? { recipientId: target.id, recipientName: target.name } : {}) }, `向${target?.name || currentCharacter?.name || "对方"}转账 ¥${amount.toFixed(2)}${label ? `（${label}）` : ""}`);
-          }} /> : null}
-          {floatingRichKind === "location" ? <LocationInputModal onClose={() => setFloatingRichKind(null)} onSend={(location) => { void handleFloatingRichSend("location", { label: location }, `分享了位置：${location}`); }} /> : null}
-          {floatingRichKind === "gift" ? <GiftPickerModal gifts={floatingGiftCandidates} isGroup={Boolean(activeGroup)} recipients={activeGroupCharacters} onClose={() => setFloatingRichKind(null)} onSend={(gift: ShoppingGiftCandidate, recipient) => {
-            void handleFloatingRichSend("gift", {
-              label: gift.productName, giftName: gift.productName, shoppingGiftId: gift.id, giftOrderId: gift.orderId,
-              giftItemId: gift.itemId, giftMerchantLabel: gift.merchantLabel, giftPriceLabel: gift.priceLabel,
-              giftPreviewIcon: gift.previewIcon, giftTone: gift.tone, giftDeliveredAt: gift.deliveredAt,
-              giftSentAt: new Date().toISOString(), senderName: userIdentity?.name || "用户",
-              ...(recipient ? { recipientId: recipient.id, recipientName: recipient.name } : {}),
-            }, `向${recipient?.name || currentCharacter?.name || "对方"}送出礼物：${gift.productName}`);
-          }} /> : null}
+          {floatingRichKind ? (
+            <div className="story-mini-phone-modal-layer" onClick={(event) => event.stopPropagation()}>
+              {floatingRichKind === "voice" ? <VoiceRecordModal characterId={activeCharacterId} onClose={() => setFloatingRichKind(null)} onSend={(text, audioDataUrl) => { void handleFloatingRichSend("audio", { label: text }, `发送了一条语音：${text}`, audioDataUrl); }} /> : null}
+              {floatingRichKind === "image" ? <PhotoInputModal onClose={() => setFloatingRichKind(null)} onSend={(description, imageDataUrl) => { void handleFloatingRichSend("image", { label: description || "图片" }, `发送了一张图片${description ? `：${description}` : ""}`, imageDataUrl); }} /> : null}
+              {floatingRichKind === "transfer_target" ? <TransferTargetModal participants={activeGroupCharacters} onClose={() => setFloatingRichKind(null)} onSelect={(character) => { setFloatingTransferTargetId(character.id); setFloatingRichKind("transfer"); }} /> : null}
+              {floatingRichKind === "transfer" ? <RedPacketModal mode="transfer" onClose={() => { setFloatingRichKind(null); setFloatingTransferTargetId(""); }} onSend={(amount, label) => {
+                const target = activeGroupCharacters.find((character) => character.id === floatingTransferTargetId);
+                void handleFloatingRichSend("transfer", { amount, label, status: "pending", ...(target ? { recipientId: target.id, recipientName: target.name } : {}) }, `向${target?.name || currentCharacter?.name || "对方"}转账 ¥${amount.toFixed(2)}${label ? `（${label}）` : ""}`);
+              }} /> : null}
+              {floatingRichKind === "location" ? <LocationInputModal onClose={() => setFloatingRichKind(null)} onSend={(location) => { void handleFloatingRichSend("location", { label: location }, `分享了位置：${location}`); }} /> : null}
+              {floatingRichKind === "gift" ? <GiftPickerModal gifts={floatingGiftCandidates} isGroup={Boolean(activeGroup)} recipients={activeGroupCharacters} onClose={() => setFloatingRichKind(null)} onSend={(gift: ShoppingGiftCandidate, recipient) => {
+                void handleFloatingRichSend("gift", {
+                  label: gift.productName, giftName: gift.productName, shoppingGiftId: gift.id, giftOrderId: gift.orderId,
+                  giftItemId: gift.itemId, giftMerchantLabel: gift.merchantLabel, giftPriceLabel: gift.priceLabel,
+                  giftPreviewIcon: gift.previewIcon, giftTone: gift.tone, giftDeliveredAt: gift.deliveredAt,
+                  giftSentAt: new Date().toISOString(), senderName: userIdentity?.name || "用户",
+                  ...(recipient ? { recipientId: recipient.id, recipientName: recipient.name } : {}),
+                }, `向${recipient?.name || currentCharacter?.name || "对方"}送出礼物：${gift.productName}`);
+              }} /> : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
