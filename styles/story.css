@@ -1128,6 +1128,13 @@
         .story-floating-chat-app { position:relative; width:min(390px,94vw); height:min(720px,88vh); overflow:hidden; border:7px solid #171717; border-radius:32px; background:var(--c-page-bg,#f8fafc); box-shadow:0 25px 80px rgba(15,23,42,.32); isolation:isolate; --app-text-scale:.82; --page-header-safe-top:0px; }
         .story-floating-chat-app>.chat-app { position:absolute!important; inset:0!important; width:100%; height:100%; min-height:0; }
         .story-floating-chat-app .page-header-safe-area { min-height:0!important; height:0!important; }
+        /* Chat/Moments panels normally use viewport-fixed overlays. Inside the
+           floating app that made their 100vw/100dvh box sit outside the clipped
+           phone frame, so the state opened but the panel looked missing. Keep
+           every native operation panel inside, and above, the embedded app. */
+        .story-floating-chat-app .modal-overlay { position:absolute!important; inset:0!important; width:100%!important; height:100%!important; min-width:0; min-height:0; z-index:10000!important; padding:12px; box-sizing:border-box; pointer-events:auto!important; }
+        .story-floating-chat-app .modal-overlay>.modal-dialog { width:min(92%,340px); max-height:calc(100% - 24px); overflow-y:auto; }
+        .story-floating-chat-app .modal-overlay>.compose-modal { width:100%; height:100%; max-height:100%; border-radius:0; animation:none; }
         .story-online-trace-card { margin:8px auto; max-width:min(88%,520px); overflow:hidden; border:1px solid color-mix(in srgb,var(--c-story-heading,#1e293b) 12%,transparent); border-radius:14px; background:color-mix(in srgb,var(--c-story-bg,#fff) 94%,var(--c-story-heading,#1e293b) 6%); box-shadow:0 6px 20px rgba(15,23,42,.08); text-align:left; }
         .story-online-trace-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 11px; background:color-mix(in srgb,var(--c-story-heading,#1e293b) 9%,transparent); }
         .story-online-trace-head strong { font-size:11px; color:var(--c-story-heading,#1e293b); }
