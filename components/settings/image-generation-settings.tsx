@@ -74,6 +74,7 @@ export function ImageGenerationSettings() {
     const [anchorPreviews, setAnchorPreviews] = useState<Record<string, string>>({});
     const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
     const [cropCharacterId, setCropCharacterId] = useState<string | null>(null);
+    const [cropUserIdentityId, setCropUserIdentityId] = useState<string | null>(null);
     const [cropDraft, setCropDraft] = useState({ x: 0.27, y: 0.12, size: 0.46 });
     const [cropViewport, setCropViewport] = useState({ width: 0, height: 0 });
     const cropContainerRef = useRef<HTMLDivElement | null>(null);
@@ -431,6 +432,7 @@ export function ImageGenerationSettings() {
     const uploadUserReference = async (identityId: string, file: File) => {
         const assetId = await saveChatImageToIndexedDB(file);
         const current = settings.userReferences?.[identityId];
+        const faceCrop = current?.faceCrop || { x: 0.27, y: 0.12, size: 0.46 };
         persist({
             ...settings,
             userReferences: {
@@ -440,10 +442,13 @@ export function ImageGenerationSettings() {
                     assetId,
                     updatedAt: Date.now(),
                     enabled: true,
-                    faceCrop: current?.faceCrop || { x: 0.27, y: 0.12, size: 0.46 },
+                    faceCrop,
                 },
             },
         });
+        setCropDraft(faceCrop);
+        setCropViewport({ width: 0, height: 0 });
+        setCropUserIdentityId(identityId);
     };
 
     const updateUserReference = (
@@ -523,6 +528,13 @@ export function ImageGenerationSettings() {
         setCropDraft(crop);
         setCropViewport({ width: 0, height: 0 });
         setCropCharacterId(characterId);
+    };
+
+    const openUserFaceCrop = (identityId: string) => {
+        const crop = settings.userReferences?.[identityId]?.faceCrop || { x: 0.27, y: 0.12, size: 0.46 };
+        setCropDraft(crop);
+        setCropViewport({ width: 0, height: 0 });
+        setCropUserIdentityId(identityId);
     };
 
     const updateCropViewport = () => {
@@ -1199,6 +1211,16 @@ export function ImageGenerationSettings() {
                                         </button>
                                     )}
                                 </div>
+                                {preview && (
+                                    <button
+                                        type="button"
+                                        className="ui-btn ui-btn-outline mt-2 w-full"
+                                        onClick={() => openUserFaceCrop(identity.id)}
+                                    >
+                                        <ScanFace size={15} />
+                                        选取面部
+                                    </button>
+                                )}
                             </div>
                         );
                     })}
@@ -1431,22 +1453,24 @@ export function ImageGenerationSettings() {
                 )}
             </div>
 
-            {cropCharacterId && referencePreviews[cropCharacterId] && (
+            {((cropCharacterId && referencePreviews[cropCharacterId]) || (cropUserIdentityId && userReferencePreviews[cropUserIdentityId])) && (
                 <ContentDialog
                     title="选取脸部锁定区域"
                     confirmLabel="保存选区"
                     cancelLabel="取消"
-                    onCancel={() => setCropCharacterId(null)}
+                    onCancel={() => { setCropCharacterId(null); setCropUserIdentityId(null); }}
                     onConfirm={() => {
-                        updateCharacterReference(cropCharacterId, { faceCrop: cropDraft, enabled: true });
+                        if (cropCharacterId) updateCharacterReference(cropCharacterId, { faceCrop: cropDraft, enabled: true });
+                        if (cropUserIdentityId) updateUserReference(cropUserIdentityId, { faceCrop: cropDraft, enabled: true });
                         setCropCharacterId(null);
+                        setCropUserIdentityId(null);
                     }}
                 >
                     <div className="flex flex-col gap-3">
-                        <p className="menu-desc">拖动方框覆盖角色脸部；发送参考图时只会截取这个区域，减少服装和背景干扰。</p>
+                        <p className="menu-desc">拖动方框覆盖{cropUserIdentityId ? "用户" : "角色"}脸部；发送参考图时只会截取这个区域，减少服装和背景干扰。</p>
                         <div ref={cropContainerRef} className="relative mx-auto w-fit max-h-[52vh] max-w-full overflow-hidden rounded-xl bg-black/80">
                             <img
-                                src={referencePreviews[cropCharacterId]}
+                                src={cropUserIdentityId ? userReferencePreviews[cropUserIdentityId] : referencePreviews[cropCharacterId!]}
                                 alt="参考图脸部选取"
                                 draggable={false}
                                 className="block max-h-[52vh] max-w-full select-none object-contain"

@@ -11,6 +11,8 @@ export type MomentPost = {
     photoUrl?: string;              // user-uploaded base64 image
     photoDescription?: string;      // AI-generated photo description (for placeholder rendering)
     photoUseReferenceImage?: boolean; // AI-generated photo should use character reference image
+    /** Permission to use the bound user's reference if the model-authored description includes the user. */
+    photoUseUserReferenceImage?: boolean;
     photoGenerationStatus?: "pending" | "failed" | "generated";
     photoGenerationPrompt?: string;
     photoGenerationError?: string;

@@ -6,6 +6,7 @@ import JSZip from "jszip";
 import { getChatImageFromIndexedDB } from "./chat-asset-storage";
 import { storeMediaBlob } from "./media-cache-storage";
 import { throwIfAborted } from "./abort-utils";
+import { descriptionNeedsUserReference } from "./image-reference-selection";
 import {
   NOVELAI_COMMON_MODELS,
   getNovelAiResolution,
@@ -178,12 +179,6 @@ async function combineReferenceImagesForEdit(
   } catch {
     return references[0].dataUrl;
   }
-}
-
-function shouldIncludeUserReference(description: string, userName?: string): boolean {
-  const text = description.toLowerCase();
-  if (userName?.trim() && text.includes(userName.trim().toLowerCase())) return true;
-  return /(?:合照|合影|双人|两个人|二人|我们.{0,8}(?:照片|自拍)|(?:和|与|同).{0,12}(?:用户|你).{0,8}(?:照片|自拍)|(?:用户|你的|你的个人|user).{0,8}(?:照片|肖像|自拍))/.test(text);
 }
 
 function resolveGenerationUserIdentityId(characterId?: string, appId?: string): string | null {
@@ -908,7 +903,7 @@ export async function generateImageFromConfiguredApi(params: {
   const identityId = resolveGenerationUserIdentityId(params.characterId, params.appId);
   const userIdentity = identityId ? loadUserIdentities().find(identity => identity.id === identityId) : undefined;
   const userReference = identityId ? settings.userReferences?.[identityId] : undefined;
-  const includeUserReference = params.includeUserReferenceImage ?? shouldIncludeUserReference(description, userIdentity?.name);
+  const includeUserReference = params.includeUserReferenceImage ?? descriptionNeedsUserReference(description, userIdentity?.name);
   if (includeUserReference && userReference?.assetId && userReference.enabled !== false) {
     const raw = await getChatImageFromIndexedDB(userReference.assetId);
     if (raw) referenceInputs.push({
@@ -972,4 +967,11 @@ export function hasCharacterReferenceImage(characterId?: string): boolean {
   const settings = loadImageGenerationSettings();
   const ref = settings.characterReferences?.[characterId];
   return Boolean(ref?.assetId);
+}
+
+export function hasUserReferenceImage(characterId?: string, appId = "chat"): boolean {
+  const identityId = resolveGenerationUserIdentityId(characterId, appId);
+  if (!identityId) return false;
+  const ref = loadImageGenerationSettings().userReferences?.[identityId];
+  return Boolean(ref?.assetId && ref.enabled !== false);
 }

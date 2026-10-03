@@ -97,6 +97,7 @@ import { generateGroupChatCompletion } from "@/lib/group-chat-engine";
 import { parseAIResponse } from "@/lib/rich-message-parser";
 import { SessionCustomCSS } from "@/components/ui/session-custom-css";
 import { MomentsFeed } from "@/components/chat/moments-feed";
+import { PhoneChatApp } from "@/components/chat/phone-chat-app";
 import { GiftPickerModal } from "@/components/chat/gift-picker-modal";
 import { TransferTargetModal } from "@/components/chat/transfer-target-modal";
 import { LocationInputModal, PhotoInputModal, RedPacketModal, VoiceRecordModal } from "@/components/chat/rich-input-modals";
@@ -140,6 +141,16 @@ registerKvMigration(STORY_ACTIVE_PAGE_MAP_KEY);
 type StoryActiveTarget = { ownerType: StoryOwnerType; ownerId: string };
 type FloatingPhoneTab = "chat" | "moments";
 type FloatingRichKind = "voice" | "image" | "transfer_target" | "transfer" | "location" | "gift" | null;
+
+function escapeStoryTraceHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  })[char] || char);
+}
 
 function loadStoryActivePageMap(): Record<string, string> {
   try {
@@ -1655,13 +1666,50 @@ export function StoryApp({ onClose }: StoryAppProps) {
     });
   }, [activeCharacterId, activeSessionId, currentSession?.autoStartPrompt, ready, storyGlobalSettings.streamingEnabled, storyGlobalSettings.timeAware]);
 
-  function appendFloatingStoryTrace(title: string, lines: string[], storySessionId = activeSessionId) {
+  function appendFloatingStoryTrace(title: string, lines: string[], storySessionId = activeSessionId, renderedContent?: string) {
     if (!storySessionId) return;
     const stamp = new Date().toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
     const transcript = [`【${title} · ${stamp}】`, ...lines].join("\n");
-    pushStoryMessage({ sessionId: storySessionId, role: "system", rawContent: transcript, renderedContent: transcript });
+    pushStoryMessage({ sessionId: storySessionId, role: "system", rawContent: transcript, renderedContent: renderedContent || transcript });
     if (activeSessionIdRef.current === storySessionId) setMessages(loadStoryMessages(storySessionId));
     setStorageVersion((value) => value + 1);
+  }
+
+  function appendEmbeddedChatTrace(message: ChatMessage, session: ChatSession) {
+    const supported = new Set<ChatMessage["mediaType"]>(["audio", "image", "transfer", "location", "gift"]);
+    if (!message.mediaType || !supported.has(message.mediaType)) return;
+    const userName = userIdentity?.name || "用户";
+    const targetName = session.isGroup
+      ? (session.groupName || "群聊")
+      : (characters.find((item) => item.id === session.contactId)?.name || "对方");
+    const data = message.mediaData || {};
+    let kind = "特殊消息";
+    let detail = message.content || data.label || "";
+    if (message.mediaType === "audio") {
+      kind = "语音";
+      detail = data.label || message.content || "发送了一条语音";
+    } else if (message.mediaType === "image") {
+      kind = "图片";
+      detail = data.label || message.content || "发送了一张图片";
+    } else if (message.mediaType === "transfer") {
+      kind = "转账";
+      const recipient = data.recipientName ? `给 ${data.recipientName}` : `给 ${targetName}`;
+      detail = `${recipient} ¥${Number(data.amount || 0).toFixed(2)}${data.label ? ` · ${data.label}` : ""}`;
+    } else if (message.mediaType === "location") {
+      kind = "位置";
+      detail = data.label || message.content || "分享了一个位置";
+    } else if (message.mediaType === "gift") {
+      kind = "礼物";
+      const recipient = data.recipientName ? `送给 ${data.recipientName}` : `送给 ${targetName}`;
+      detail = `${recipient} · ${data.giftName || data.label || "礼物"}`;
+    }
+    const createdAt = new Date(message.createdAt).toLocaleString();
+    const rendered = `<div class="story-online-trace-card" data-trace-kind="${escapeStoryTraceHtml(kind)}"><div class="story-online-trace-head"><strong>${escapeStoryTraceHtml(kind)}</strong><span>${escapeStoryTraceHtml(createdAt)}</span></div><div class="story-online-trace-body"><b>${escapeStoryTraceHtml(userName)}</b><span> → ${escapeStoryTraceHtml(targetName)}</span><p>${escapeStoryTraceHtml(detail)}</p></div></div>`;
+    appendFloatingStoryTrace(`线上${kind}`, [
+      `发送人：${userName}`,
+      `发送到：${targetName}`,
+      `内容：${detail}`,
+    ], activeSessionIdRef.current, rendered);
   }
 
   async function completeFloatingOnlineRound(chatSession: ChatSession, userTrace: string, storySessionId: string) {
@@ -1800,12 +1848,15 @@ export function StoryApp({ onClose }: StoryAppProps) {
   }
 
   function handleFloatingMomentPublished(post: MomentPost) {
+    const createdAt = new Date(post.createdAt).toLocaleString();
+    const userName = userIdentity?.name || "用户";
     const details = [
-      `${userIdentity?.name || "用户"}发布了朋友圈：${post.content}`,
+      `${userName}发布了动态：${post.content}`,
       post.location ? `位置：${post.location}` : "",
       post.photoUrl || post.photoDescription ? `图片：${post.photoDescription || "已附图片"}` : "",
     ].filter(Boolean);
-    appendFloatingStoryTrace("朋友圈", details);
+    const rendered = `<div class="story-online-trace-card" data-trace-kind="动态"><div class="story-online-trace-head"><strong>动态</strong><span>${escapeStoryTraceHtml(createdAt)}</span></div><div class="story-online-trace-body"><b>${escapeStoryTraceHtml(userName)}</b><p>${escapeStoryTraceHtml(post.content)}</p>${post.location ? `<small>位置 · ${escapeStoryTraceHtml(post.location)}</small>` : ""}${post.photoUrl || post.photoDescription ? `<small>图片 · ${escapeStoryTraceHtml(post.photoDescription || "已附图片")}</small>` : ""}</div></div>`;
+    appendFloatingStoryTrace("动态", details, activeSessionIdRef.current, rendered);
   }
 
   function publishIsolatedMoment() {
@@ -2399,6 +2450,17 @@ export function StoryApp({ onClose }: StoryAppProps) {
       ) : null}
       {floatingPhoneOpen ? (
         <div className="story-mini-phone-overlay" onClick={() => setFloatingPhoneOpen(false)}>
+          {!independentFloatingShell ? (
+            <section className="story-floating-chat-app" onClick={(event) => event.stopPropagation()}>
+              <PhoneChatApp
+                onClose={() => setFloatingPhoneOpen(false)}
+                initialSessionId={floatingChatSession?.id || null}
+                onUserMessageSent={appendEmbeddedChatTrace}
+                onMomentPublished={handleFloatingMomentPublished}
+              />
+            </section>
+          ) : (
+          <>
           <section className="story-mini-phone" onClick={(event) => event.stopPropagation()}>
             {floatingPhoneTab === "moments" && !independentFloatingShell ? (
               <div className="story-mini-phone-moments">
@@ -2528,6 +2590,8 @@ export function StoryApp({ onClose }: StoryAppProps) {
               }} /> : null}
             </div>
           ) : null}
+          </>
+          )}
         </div>
       ) : null}
 

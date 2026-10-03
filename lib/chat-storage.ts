@@ -241,6 +241,8 @@ export type ChatMessage = {
         fileName?: string;
         fileDuration?: number;
         useReferenceImage?: boolean; // AI photo tag: whether to send the character reference image to the generator
+        /** Permission to use the bound user's face reference when the model-authored description says the user appears. */
+        useUserReferenceImage?: boolean;
         imageGenerationMediaRef?: string;
         imageGenerationPrompt?: string;
         imageGenerationUsedReference?: boolean;
